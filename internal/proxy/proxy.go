@@ -12,7 +12,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/ringsaturn/mangopi/internal/protocol"
+	"github.com/ringsaturn/gawamango/internal/protocol"
 )
 
 type ProxyOption func(*Proxy)
@@ -65,7 +65,9 @@ func (p *Proxy) Start() error {
 func (p *Proxy) Stop() error {
 	p.cancel()
 	if p.listener != nil {
-		p.listener.Close()
+		if err := p.listener.Close(); err != nil {
+			return fmt.Errorf("error closing listener: %v", err)
+		}
 	}
 	p.wg.Wait()
 	return nil
@@ -136,7 +138,9 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	// Connect to the target MongoDB server.
 	serverConn, err := net.Dial("tcp", p.targetAddr)
 	if err != nil {
-		clientConn.Close()
+		if err := clientConn.Close(); err != nil {
+			fmt.Printf("Error closing client connection: %v\n", err)
+		}
 		return
 	}
 
@@ -165,9 +169,13 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 
 		// Half‑close: signal FIN for this direction only.
 		if tcp, ok := serverConn.(*net.TCPConn); ok {
-			tcp.CloseWrite()
+			if err := tcp.CloseWrite(); err != nil {
+				fmt.Printf("Error closing write on server connection: %v\n", err)
+			}
 		} else {
-			serverConn.Close()
+			if err := serverConn.Close(); err != nil {
+				fmt.Printf("Error closing server connection: %v\n", err)
+			}
 		}
 
 		if err != nil && !isBrokenPipe(err) && p.ctx.Err() == nil {
@@ -182,9 +190,13 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 
 		// Half‑close: signal FIN for this direction only.
 		if tcp, ok := clientConn.(*net.TCPConn); ok {
-			tcp.CloseWrite()
+			if err := tcp.CloseWrite(); err != nil {
+				fmt.Printf("Error closing write on client connection: %v\n", err)
+			}
 		} else {
-			clientConn.Close()
+			if err := clientConn.Close(); err != nil {
+				fmt.Printf("Error closing client connection: %v\n", err)
+			}
 		}
 
 		if err != nil && !isBrokenPipe(err) && p.ctx.Err() == nil {
@@ -194,8 +206,12 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 
 	// Wait for both directions to finish.
 	wg.Wait()
-	clientConn.Close()
-	serverConn.Close()
+	if err := clientConn.Close(); err != nil {
+		fmt.Printf("Error closing client connection: %v\n", err)
+	}
+	if err := serverConn.Close(); err != nil {
+		fmt.Printf("Error closing server connection: %v\n", err)
+	}
 }
 
 // mongoReader 是一个自定义的io.Reader实现，用于解析MongoDB消息

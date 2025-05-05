@@ -1,9 +1,9 @@
-# MangoPi - MongoDB Proxy
+# gawamango - MongoDB Proxy
 
 > [!WARNING]
 > This project is not for production use.
 
-MangoPi is a minimal MongoDB proxy that transparently forwards MongoDB wire
+gawamango is a minimal MongoDB proxy that transparently forwards MongoDB wire
 protocol messages between clients and servers.
 
 ## Features
@@ -16,26 +16,26 @@ protocol messages between clients and servers.
 ## Installation
 
 ```bash
-go install github.com/ringsaturn/mangopi/cmd/mangopi@latest
+go install github.com/ringsaturn/gawamango/cmd/gawamango@latest
 ```
 
 ## Usage
 
 ```bash
 # Basic usage
-mangopi -listen localhost:27017 -target localhost:27018
+gawamango -listen localhost:27017 -target localhost:27018
 
 # Help
-mangopi -help
+gawamango -help
 ```
 
 For example, start a server:
 
 ```bash
-go run cmd/mangopi/main.go
+go run cmd/gawamango/main.go
 ```
 
-Then use MongoDB client to connect to MangoPi.
+Then use MongoDB client to connect to gawamango.
 
 ```py
 from pymongo import MongoClient
@@ -137,9 +137,9 @@ MongoDB Command:
 ### Building from Source
 
 ```bash
-git clone https://github.com/ringsaturn/mangopi.git
-cd mangopi
-go build -o mangopi cmd/mangopi/main.go
+git clone https://github.com/ringsaturn/gawamango.git
+cd gawamango
+go build -o gawamango cmd/gawamango/main.go
 ```
 
 ### Running Tests

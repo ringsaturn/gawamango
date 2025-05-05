@@ -1,9 +1,9 @@
 build:
 	mkdir -p bin
-	go build -o bin/mangopi cmd/mangopi/main.go
+	go build -o bin/gawamango cmd/gawamango/main.go
 
 run:
-	go run cmd/mangopi/main.go
+	go run cmd/gawamango/main.go
 
 clean:
 	rm -rf bin

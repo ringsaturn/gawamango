@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/ringsaturn/mangopi/internal/proxy"
+	"github.com/ringsaturn/gawamango/internal/proxy"
 )
 
 func main() {

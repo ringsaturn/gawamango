@@ -41,7 +41,9 @@ func (p *simpleEchoProxy) Start() error {
 func (p *simpleEchoProxy) Stop() error {
 	p.cancel()
 	if p.listener != nil {
-		p.listener.Close()
+		if err := p.listener.Close(); err != nil {
+			return fmt.Errorf("error closing listener: %v", err)
+		}
 	}
 	p.wg.Wait()
 	return nil
@@ -69,18 +71,30 @@ func (p *simpleEchoProxy) acceptLoop() {
 
 func (p *simpleEchoProxy) handleConnection(clientConn net.Conn) {
 	defer p.wg.Done()
-	defer clientConn.Close()
+	defer func() {
+		if err := clientConn.Close(); err != nil {
+			fmt.Printf("Error closing client connection: %v\n", err)
+		}
+	}()
 
 	// Connect to the target server
 	serverConn, err := net.Dial("tcp", "localhost:7777")
 	if err != nil {
 		return
 	}
-	defer serverConn.Close()
+	defer func() {
+		if err := serverConn.Close(); err != nil {
+			fmt.Printf("Error closing server connection: %v\n", err)
+		}
+	}()
 
 	// Set short timeouts for both connections
-	clientConn.SetDeadline(time.Now().Add(100 * time.Millisecond))
-	serverConn.SetDeadline(time.Now().Add(100 * time.Millisecond))
+	if err := clientConn.SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		fmt.Printf("Error setting client deadline: %v\n", err)
+	}
+	if err := serverConn.SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		fmt.Printf("Error setting server deadline: %v\n", err)
+	}
 
 	// Simple bidirectional copy
 	var wg sync.WaitGroup
@@ -88,12 +102,16 @@ func (p *simpleEchoProxy) handleConnection(clientConn net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		io.Copy(serverConn, clientConn)
+		if _, err := io.Copy(serverConn, clientConn); err != nil {
+			fmt.Printf("Error copying from client to server: %v\n", err)
+		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		io.Copy(clientConn, serverConn)
+		if _, err := io.Copy(clientConn, serverConn); err != nil {
+			fmt.Printf("Error copying from server to client: %v\n", err)
+		}
 	}()
 
 	wg.Wait()
@@ -105,7 +123,11 @@ func TestProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test server: %v", err)
 	}
-	defer serverListener.Close()
+	defer func() {
+		if err := serverListener.Close(); err != nil {
+			t.Logf("Error closing server listener: %v", err)
+		}
+	}()
 
 	// 创建上下文用于控制测试服务器的生命周期
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,10 +140,16 @@ func TestProxy(t *testing.T) {
 			t.Logf("Test server accept error: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer func() {
+			if err := conn.Close(); err != nil {
+				t.Logf("Error closing connection: %v", err)
+			}
+		}()
 
 		// 设置读写超时
-		conn.SetDeadline(time.Now().Add(100 * time.Millisecond))
+		if err := conn.SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+			t.Logf("Error setting deadline: %v", err)
+		}
 
 		// 简单的echo服务器
 		buf := make([]byte, 1024)
@@ -155,17 +183,27 @@ func TestProxy(t *testing.T) {
 	if err := p.Start(); err != nil {
 		t.Fatalf("Failed to start proxy: %v", err)
 	}
-	defer p.Stop()
+	defer func() {
+		if err := p.Stop(); err != nil {
+			t.Logf("Error stopping proxy: %v", err)
+		}
+	}()
 
 	// 连接到代理
 	conn, err := net.Dial("tcp", "localhost:6666")
 	if err != nil {
 		t.Fatalf("Failed to connect to proxy: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Logf("Error closing connection: %v", err)
+		}
+	}()
 
 	// 设置读写超时
-	conn.SetDeadline(time.Now().Add(100 * time.Millisecond))
+	if err := conn.SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Logf("Error setting deadline: %v", err)
+	}
 
 	// 测试数据
 	testData := []byte("test message")
