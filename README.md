@@ -1,6 +1,6 @@
 # Gawamango - MongoDB Proxy
 
-![](./assets/logo.webp)
+<img src="./assets/logo.webp" width="200" alt="Gawamango Logo" align="right">
 
 > [!WARNING]
 > This project is not for production use.
