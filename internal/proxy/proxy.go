@@ -16,19 +16,27 @@ import (
 	"go.uber.org/zap"
 )
 
-// Trace represents timing information for a MongoDB request/response cycle
-type Trace struct {
-	RequestID         int32         // MongoDB request ID
-	StartTime         time.Time     // When the request was received from client
-	ClientToProxyTime time.Duration // Time spent reading from client
-	ProxyToServerTime time.Duration // Time spent writing to server
-	ServerProcessTime time.Duration // Time spent on server processing
-	ServerToProxyTime time.Duration // Time spent reading from server
-	ProxyToClientTime time.Duration // Time spent writing to client
-	TotalTime         time.Duration // Total end-to-end time
-	Command           string        // MongoDB command
-	Database          string        // Database name
-}
+// contextKey 是用于在 context 中存储值的键类型
+type contextKey string
+
+const (
+	// 用于存储请求开始时间
+	startTimeKey contextKey = "start_time"
+	// 用于存储 MongoDB 请求 ID
+	requestIDKey contextKey = "request_id"
+	// 用于存储 MongoDB 命令
+	commandKey contextKey = "command"
+	// 用于存储数据库名称
+	databaseKey contextKey = "database"
+	// 用于存储客户端到代理的时间
+	clientToProxyTimeKey contextKey = "client_to_proxy_time"
+	// 用于存储代理到服务器的时间
+	proxyToServerTimeKey contextKey = "proxy_to_server_time"
+	// 用于存储服务器到代理的时间
+	serverToProxyTimeKey contextKey = "server_to_proxy_time"
+	// 用于存储代理到客户端的时间
+	proxyToClientTimeKey contextKey = "proxy_to_client_time"
+)
 
 type ProxyOption func(*Proxy)
 
@@ -54,8 +62,9 @@ type Proxy struct {
 	wg         sync.WaitGroup
 	silent     bool
 	logger     *zap.Logger
-	traces     map[int32]*Trace // Map of request ID to trace
-	tracesMu   sync.RWMutex     // Mutex to protect the traces map
+	// 请求ID到context的映射，用于关联请求和响应
+	contexts   map[int32]context.Context
+	contextsMu sync.RWMutex // 保护contexts的互斥锁
 }
 
 // NewProxy creates a new MongoDB proxy instance
@@ -66,7 +75,7 @@ func NewProxy(listenAddr, targetAddr string, opts ...ProxyOption) (*Proxy, error
 		targetAddr: targetAddr,
 		ctx:        ctx,
 		cancel:     cancel,
-		traces:     make(map[int32]*Trace),
+		contexts:   make(map[int32]context.Context),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -118,16 +127,16 @@ func (p *Proxy) acceptLoop() {
 	}
 }
 
-func (p *Proxy) setupLoggingMsg() func(header *protocol.MsgHeader, body []byte) {
+func (p *Proxy) setupLoggingMsg() func(ctx context.Context, header *protocol.MsgHeader, body []byte) context.Context {
 	if p.logger == nil {
 		return nil
 	}
 
-	return func(header *protocol.MsgHeader, body []byte) {
+	return func(ctx context.Context, header *protocol.MsgHeader, body []byte) context.Context {
 		cmd, err := protocol.ParseCommand(header.OpCode, body)
 		if err != nil {
 			p.logger.Error("error parsing command", zap.Error(err))
-			return
+			return ctx
 		}
 
 		p.logger.Info(
@@ -136,110 +145,93 @@ func (p *Proxy) setupLoggingMsg() func(header *protocol.MsgHeader, body []byte) 
 			zap.String("command", cmd.CommandName),
 			zap.Any("arguments", cmd.Arguments),
 		)
+
+		// 将命令信息添加到context
+		ctx = context.WithValue(ctx, commandKey, cmd.CommandName)
+		ctx = context.WithValue(ctx, databaseKey, cmd.Database)
+
+		return ctx
 	}
 }
 
-// addTrace creates a new trace for a request
-func (p *Proxy) addTrace(header *protocol.MsgHeader, body []byte) {
-	if header == nil {
-		return
-	}
-
-	trace := &Trace{
-		RequestID: header.RequestID,
-		StartTime: time.Now(),
-	}
-
-	// Try to parse the command for more context
-	cmd, err := protocol.ParseCommand(header.OpCode, body)
-	if err == nil {
-		trace.Command = cmd.CommandName
-		trace.Database = cmd.Database
-	}
-
-	p.tracesMu.Lock()
-	p.traces[header.RequestID] = trace
-	p.tracesMu.Unlock()
+// storeContext 保存请求的context以便在响应中查找
+func (p *Proxy) storeContext(requestID int32, ctx context.Context) {
+	p.contextsMu.Lock()
+	defer p.contextsMu.Unlock()
+	p.contexts[requestID] = ctx
 }
 
-// updateTrace updates timing information for a trace
-func (p *Proxy) updateTrace(header *protocol.MsgHeader, stage string, duration time.Duration) {
-	if header == nil {
-		return
-	}
-
-	p.tracesMu.RLock()
-	trace, exists := p.traces[header.ResponseTo]
-	p.tracesMu.RUnlock()
-
-	if !exists {
-		return
-	}
-
-	p.tracesMu.Lock()
-	defer p.tracesMu.Unlock()
-
-	switch stage {
-	case "client_to_proxy":
-		trace.ClientToProxyTime = duration
-	case "proxy_to_server":
-		trace.ProxyToServerTime = duration
-	case "server_to_proxy":
-		trace.ServerToProxyTime = duration
-	case "proxy_to_client":
-		trace.ProxyToClientTime = duration
-	}
-
-	// Calculate server processing time
-	if trace.ServerToProxyTime > 0 && trace.ProxyToServerTime > 0 {
-		trace.ServerProcessTime = time.Since(trace.StartTime) -
-			trace.ClientToProxyTime - trace.ProxyToServerTime -
-			trace.ServerToProxyTime - trace.ProxyToClientTime
-	}
-
-	trace.TotalTime = time.Since(trace.StartTime)
-
-	// Log the trace info
-	if p.logger != nil {
-		p.logger.Debug("Trace updated",
-			zap.Int32("requestID", trace.RequestID),
-			zap.String("command", trace.Command),
-			zap.String("database", trace.Database),
-			zap.String("stage", stage),
-			zap.Duration("duration", duration),
-			zap.Duration("totalTime", trace.TotalTime),
-		)
-	}
+// getContext 根据responseID获取对应请求的context
+func (p *Proxy) getContext(responseID int32) (context.Context, bool) {
+	p.contextsMu.RLock()
+	defer p.contextsMu.RUnlock()
+	ctx, exists := p.contexts[responseID]
+	return ctx, exists
 }
 
-// completeTrace logs the final timing info and removes the trace
-func (p *Proxy) completeTrace(requestID int32) {
-	p.tracesMu.RLock()
-	trace, exists := p.traces[requestID]
-	p.tracesMu.RUnlock()
+// removeContext 删除已完成请求的context
+func (p *Proxy) removeContext(requestID int32) {
+	p.contextsMu.Lock()
+	defer p.contextsMu.Unlock()
+	delete(p.contexts, requestID)
+}
 
-	if !exists {
+// createRequestContext 为新请求创建context并记录开始时间
+func (p *Proxy) createRequestContext(header *protocol.MsgHeader) context.Context {
+	// 用连接级别的context创建请求context
+	ctx := context.WithValue(p.ctx, startTimeKey, time.Now())
+	ctx = context.WithValue(ctx, requestIDKey, header.RequestID)
+
+	// 保存此context以便在响应中找到它
+	p.storeContext(header.RequestID, ctx)
+
+	return ctx
+}
+
+// updateContextTiming 更新context中的计时信息
+func (p *Proxy) updateContextTiming(ctx context.Context, key contextKey, duration time.Duration) context.Context {
+	return context.WithValue(ctx, key, duration)
+}
+
+// logCompletedRequest 记录完成的请求信息
+func (p *Proxy) logCompletedRequest(ctx context.Context) {
+	if p.logger == nil || ctx == nil {
 		return
 	}
 
-	if p.logger != nil {
-		p.logger.Debug("Request completed",
-			zap.Int32("requestID", trace.RequestID),
-			zap.String("command", trace.Command),
-			zap.String("database", trace.Database),
-			zap.Duration("clientToProxy", trace.ClientToProxyTime),
-			zap.Duration("proxyToServer", trace.ProxyToServerTime),
-			zap.Duration("serverProcess", trace.ServerProcessTime),
-			zap.Duration("serverToProxy", trace.ServerToProxyTime),
-			zap.Duration("proxyToClient", trace.ProxyToClientTime),
-			zap.Duration("totalTime", trace.TotalTime),
-		)
+	startTime, ok := ctx.Value(startTimeKey).(time.Time)
+	if !ok {
+		return
 	}
 
-	// Remove the trace
-	p.tracesMu.Lock()
-	delete(p.traces, requestID)
-	p.tracesMu.Unlock()
+	requestID, _ := ctx.Value(requestIDKey).(int32)
+	command, _ := ctx.Value(commandKey).(string)
+	database, _ := ctx.Value(databaseKey).(string)
+
+	clientToProxyTime, _ := ctx.Value(clientToProxyTimeKey).(time.Duration)
+	proxyToServerTime, _ := ctx.Value(proxyToServerTimeKey).(time.Duration)
+	serverToProxyTime, _ := ctx.Value(serverToProxyTimeKey).(time.Duration)
+	proxyToClientTime, _ := ctx.Value(proxyToClientTimeKey).(time.Duration)
+
+	// 计算服务器处理时间和总时间
+	totalTime := time.Since(startTime)
+	serverProcessTime := totalTime - clientToProxyTime - proxyToServerTime - serverToProxyTime - proxyToClientTime
+
+	// 记录完整的请求信息
+	p.logger.Debug("Request completed",
+		zap.Int32("requestID", requestID),
+		zap.String("command", command),
+		zap.String("database", database),
+		zap.Duration("clientToProxy", clientToProxyTime),
+		zap.Duration("proxyToServer", proxyToServerTime),
+		zap.Duration("serverProcess", serverProcessTime),
+		zap.Duration("serverToProxy", serverToProxyTime),
+		zap.Duration("proxyToClient", proxyToClientTime),
+		zap.Duration("totalTime", totalTime),
+	)
+
+	// 完成后删除context
+	p.removeContext(requestID)
 }
 
 // isBrokenPipe reports whether the I/O error is the expected result of the peer
@@ -278,25 +270,23 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		return
 	}
 
-	// Create context with connection-specific cancelation
+	// 创建连接级别的context
 	connCtx, cancel := context.WithCancel(p.ctx)
 	defer cancel()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	onMessageOps := []func(header *protocol.MsgHeader, body []byte){}
+	onMessageOps := []func(ctx context.Context, header *protocol.MsgHeader, body []byte) context.Context{}
 	if !p.silent {
 		onMessageOps = append(onMessageOps, p.setupLoggingMsg())
 	}
 
-	// Add tracing to message operations
-	onMessageOps = append(onMessageOps, p.addTrace)
-
-	onMessageFunc := func(header *protocol.MsgHeader, body []byte) {
+	onMessageFunc := func(ctx context.Context, header *protocol.MsgHeader, body []byte) context.Context {
 		for _, op := range onMessageOps {
-			op(header, body)
+			ctx = op(ctx, header, body)
 		}
+		return ctx
 	}
 
 	// client ➜ server
@@ -307,13 +297,17 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 			onMessage: onMessageFunc,
 			direction: "client_to_proxy",
 			proxy:     p,
+			timingKey: clientToProxyTimeKey,
+			ctx:       connCtx,
+			createCtx: true, // 这是请求的起点，需要创建新的context
 		}
 
-		// Use an intermediate writer to track timing
+		// 使用中间writer来跟踪timing
 		writer := &timingWriter{
 			Writer:    serverConn,
 			direction: "proxy_to_server",
 			proxy:     p,
+			timingKey: proxyToServerTimeKey,
 		}
 
 		_, err := io.Copy(writer, reader)
@@ -339,9 +333,12 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		defer wg.Done()
 		reader := &mongoReader{
 			conn:       serverConn,
-			onMessage:  nil, // No need for onMessage for server responses
+			onMessage:  nil, // 响应不需要onMessage
 			direction:  "server_to_proxy",
 			proxy:      p,
+			timingKey:  serverToProxyTimeKey,
+			ctx:        connCtx,
+			createCtx:  false, // 这是响应，需要查找已有的context
 			isResponse: true,
 		}
 
@@ -349,6 +346,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 			Writer:    clientConn,
 			direction: "proxy_to_client",
 			proxy:     p,
+			timingKey: proxyToClientTimeKey,
 		}
 
 		_, err := io.Copy(writer, reader)
@@ -382,13 +380,17 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 // mongoReader 是一个自定义的io.Reader实现，用于解析MongoDB消息
 type mongoReader struct {
 	conn          net.Conn
-	onMessage     func(header *protocol.MsgHeader, body []byte)
+	onMessage     func(ctx context.Context, header *protocol.MsgHeader, body []byte) context.Context
 	buf           []byte
 	currentHeader *protocol.MsgHeader
 	direction     string
 	proxy         *Proxy
 	isResponse    bool
 	readStart     time.Time
+	ctx           context.Context
+	msgCtx        context.Context // 当前消息的context
+	createCtx     bool
+	timingKey     contextKey
 }
 
 func (r *mongoReader) Read(p []byte) (n int, err error) {
@@ -418,19 +420,33 @@ func (r *mongoReader) Read(p []byte) (n int, err error) {
 
 		// 记录读取时间
 		readDuration := time.Since(r.readStart)
-		if r.proxy != nil {
-			if r.isResponse {
-				// For responses, update the trace using ResponseTo (matches the original RequestID)
-				r.proxy.updateTrace(header, r.direction, readDuration)
-			} else {
-				// For requests, we add to trace in onMessage but still update time
-				r.proxy.updateTrace(header, r.direction, readDuration)
-			}
-		}
 
-		// 调用回调函数
-		if r.onMessage != nil {
-			r.onMessage(header, body)
+		if r.proxy != nil {
+			var msgCtx context.Context
+
+			if r.isResponse {
+				// 对于响应，查找相应的请求context
+				existingCtx, exists := r.proxy.getContext(header.ResponseTo)
+				if exists {
+					msgCtx = existingCtx
+					// 更新context中的计时信息
+					msgCtx = r.proxy.updateContextTiming(msgCtx, r.timingKey, readDuration)
+					// 使用timingWriter负责记录proxyToClientTime并完成请求
+				}
+			} else if r.createCtx {
+				// 对于请求，创建新的context
+				msgCtx = r.proxy.createRequestContext(header)
+				// 更新context中的计时信息
+				msgCtx = r.proxy.updateContextTiming(msgCtx, r.timingKey, readDuration)
+			}
+
+			// 保存msgCtx以供timingWriter使用
+			r.msgCtx = msgCtx
+
+			// 调用回调函数
+			if r.onMessage != nil && msgCtx != nil {
+				r.msgCtx = r.onMessage(msgCtx, header, body)
+			}
 		}
 
 		// 将完整的消息放入缓冲区
@@ -441,29 +457,44 @@ func (r *mongoReader) Read(p []byte) (n int, err error) {
 	n = copy(p, r.buf)
 	r.buf = r.buf[n:]
 
-	// If we've emptied the buffer and this is a response, mark the trace as complete
-	if len(r.buf) == 0 && r.isResponse && r.proxy != nil && r.currentHeader != nil {
-		r.proxy.completeTrace(r.currentHeader.ResponseTo)
-		r.currentHeader = nil
-	}
-
 	return n, nil
 }
 
-// timingWriter wraps an io.Writer to measure write times for tracing
+// timingWriter 包装io.Writer以测量写入时间
 type timingWriter struct {
 	io.Writer
 	direction     string
 	proxy         *Proxy
 	currentHeader *protocol.MsgHeader
+	timingKey     contextKey
 }
 
 func (w *timingWriter) Write(p []byte) (n int, err error) {
-	// If the buffer is at least 16 bytes, try to parse the header
+	var msgCtx context.Context
+	var msgID int32
+
+	// 如果缓冲区至少有16字节，尝试解析header
 	if len(p) >= 16 {
 		header, err := protocol.ParseHeader(p[:16])
 		if err == nil {
 			w.currentHeader = header
+
+			// 确定是请求还是响应
+			if header.ResponseTo > 0 {
+				// 这是响应
+				existingCtx, exists := w.proxy.getContext(header.ResponseTo)
+				if exists {
+					msgCtx = existingCtx
+					msgID = header.ResponseTo
+				}
+			} else {
+				// 这是请求
+				existingCtx, exists := w.proxy.getContext(header.RequestID)
+				if exists {
+					msgCtx = existingCtx
+					msgID = header.RequestID
+				}
+			}
 		}
 	}
 
@@ -471,9 +502,19 @@ func (w *timingWriter) Write(p []byte) (n int, err error) {
 	n, err = w.Writer.Write(p)
 	writeDuration := time.Since(writeStart)
 
-	// Record the write time
-	if w.proxy != nil && w.currentHeader != nil {
-		w.proxy.updateTrace(w.currentHeader, w.direction, writeDuration)
+	// 记录写入时间
+	if w.proxy != nil && msgCtx != nil {
+		msgCtx = w.proxy.updateContextTiming(msgCtx, w.timingKey, writeDuration)
+
+		// 如果这是发送给客户端的响应，标记请求完成
+		if w.timingKey == proxyToClientTimeKey && w.currentHeader != nil && w.currentHeader.ResponseTo > 0 {
+			w.proxy.logCompletedRequest(msgCtx)
+		}
+
+		// 更新context
+		if msgID > 0 {
+			w.proxy.storeContext(msgID, msgCtx)
+		}
 	}
 
 	return n, err
