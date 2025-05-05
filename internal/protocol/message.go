@@ -126,11 +126,15 @@ func parseBSON(data []byte) (map[string]interface{}, error) {
 
 	// Get document length
 	docLen := int(binary.LittleEndian.Uint32(data[0:4]))
-	if docLen > len(data) {
-		return nil, fmt.Errorf("document length exceeds buffer size")
+	if docLen > len(data) || docLen < 5 {
+		return nil, fmt.Errorf("invalid document length")
 	}
 
-	// Skip length and parse elements
+	// Work strictly within this BSON document to avoid bleeding into the
+	// next section of the MongoDB message.
+	data = data[:docLen]
+
+	// Skip the leading int32 length so `data` now points at the first element.
 	data = data[4:]
 	result := make(map[string]interface{})
 
@@ -175,9 +179,9 @@ func parseBSON(data []byte) (map[string]interface{}, error) {
 		// 0x7F: Max key
 		// 0xFF: Min key
 		switch elementType {
-		case 0x00: // reserved
-			// Skip reserved type
-			continue
+		case 0x00: // end‑of‑object (EOO) sentinel
+			// Reached the end of this document — stop parsing.
+			return result, nil
 		case 0x01: // double
 			if len(data) < 8 {
 				return nil, fmt.Errorf("invalid double value")
@@ -416,33 +420,11 @@ func parseBSON(data []byte) (map[string]interface{}, error) {
 				"type": "max_key",
 			}
 		default:
-			// 对于未知类型，记录警告并尝试跳过
-			fmt.Printf("Warning: encountered unknown BSON type: %d (0x%x)\n", elementType, elementType)
-
-			// 尝试跳过这个元素
-			// 首先跳过名称
-			for len(data) > 0 && data[0] != 0 {
-				data = data[1:]
-			}
-			if len(data) == 0 {
-				return nil, fmt.Errorf("invalid element name for unknown type")
-			}
-			data = data[1:] // 跳过null终止符
-
-			// 尝试跳过值
-			// 对于未知类型，我们不知道其长度，所以只能尝试跳过固定长度
-			// 这里我们选择跳过8字节，这是一个相对安全的猜测
-			if len(data) >= 8 {
-				data = data[8:]
-			} else {
-				return nil, fmt.Errorf("insufficient data for unknown type")
-			}
-
-			// 将未知类型标记为特殊值
-			result[name] = map[string]interface{}{
-				"type": "unknown",
-				"code": elementType,
-			}
+			// 对于未知类型，直接跳过整个消息
+			rawMsg := data
+			fmt.Printf("Warning: skipping message with unknown BSON type: %d (0x%x)\n", elementType, elementType)
+			fmt.Printf("Raw message: %x\n", rawMsg)
+			return nil, nil
 		}
 	}
 
