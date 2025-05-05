@@ -19,6 +19,8 @@ go install github.com/ringsaturn/mangopi/cmd/mangopi@latest
 ## Usage
 
 ```bash
+# use MANGOPROXY_SILENT=1 to disable logging
+
 # Basic usage
 mangopi -listen localhost:27017 -target localhost:27018
 

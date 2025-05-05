@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 
 	"github.com/ringsaturn/mangopi/internal/protocol"
@@ -74,6 +75,29 @@ func (p *Proxy) acceptLoop() {
 	}
 }
 
+var silent = os.Getenv("MANGOPROXY_SILENT") == "1"
+
+func loggingMsg(header *protocol.MsgHeader, body []byte) {
+	if silent {
+		return
+	}
+
+	// 解析命令
+	cmd, err := protocol.ParseCommand(header.OpCode, body)
+	if err != nil {
+		fmt.Printf("Error parsing command: %v\n", err)
+		return
+	}
+
+	// 打印命令信息
+	cmdJSON, _ := json.MarshalIndent(cmd, "", "  ")
+	fmt.Printf("MongoDB Command:\n")
+	fmt.Printf("  Database: %s\n", cmd.Database)
+	fmt.Printf("  Command: %s\n", cmd.CommandName)
+	fmt.Printf("  Arguments: %s\n", string(cmdJSON))
+	fmt.Println("----------------------------------------")
+}
+
 func (p *Proxy) handleConnection(clientConn net.Conn) {
 	defer p.wg.Done()
 	defer clientConn.Close()
@@ -96,20 +120,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		reader := &mongoReader{
 			conn: clientConn,
 			onMessage: func(header *protocol.MsgHeader, body []byte) {
-				// 解析命令
-				cmd, err := protocol.ParseCommand(header.OpCode, body)
-				if err != nil {
-					fmt.Printf("Error parsing command: %v\n", err)
-					return
-				}
-
-				// 打印命令信息
-				cmdJSON, _ := json.MarshalIndent(cmd, "", "  ")
-				fmt.Printf("MongoDB Command:\n")
-				fmt.Printf("  Database: %s\n", cmd.Database)
-				fmt.Printf("  Command: %s\n", cmd.CommandName)
-				fmt.Printf("  Arguments: %s\n", string(cmdJSON))
-				fmt.Println("----------------------------------------")
+				loggingMsg(header, body)
 			},
 		}
 		_, err := io.Copy(serverConn, reader)
