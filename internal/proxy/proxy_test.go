@@ -9,7 +9,7 @@ import (
 
 func TestProxy(t *testing.T) {
 	// 创建测试用的MongoDB服务器模拟器
-	serverListener, err := net.Listen("tcp", "localhost:0")
+	serverListener, err := net.Listen("tcp", "localhost:7777")
 	if err != nil {
 		t.Fatalf("Failed to create test server: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestProxy(t *testing.T) {
 	}()
 
 	// 创建代理实例
-	proxyAddr := "localhost:0"
+	proxyAddr := "localhost:6666"
 	p, err := NewProxy(proxyAddr, serverListener.Addr().String())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
@@ -73,7 +73,7 @@ func TestProxy(t *testing.T) {
 }
 
 func TestProxyShutdown(t *testing.T) {
-	p, err := NewProxy("localhost:0", "localhost:27018")
+	p, err := NewProxy("localhost:6666", "localhost:7777")
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
