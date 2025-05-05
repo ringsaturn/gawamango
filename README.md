@@ -1,9 +1,11 @@
-# gawamango - MongoDB Proxy
+# Gawamango - MongoDB Proxy
+
+![](./assets/logo.webp)
 
 > [!WARNING]
 > This project is not for production use.
 
-gawamango is a minimal MongoDB proxy that transparently forwards MongoDB wire
+Gawamango is a minimal MongoDB proxy that transparently forwards MongoDB wire
 protocol messages between clients and servers.
 
 ## Features
