@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ringsaturn/gawamango/internal/protocol"
 	"github.com/ringsaturn/gawamango/internal/telemetry"
@@ -68,6 +69,14 @@ type Proxy struct {
 	logger       *zap.Logger
 	tracer       trace.Tracer
 	otelShutdown func(context.Context) error
+	// requestID -> span (kept until the matching response arrives)
+	// inflight sync.Map // removed as per instructions
+}
+
+// reqState keeps the root span and the time the request finished writing to MongoDB
+type reqState struct {
+	span   trace.Span
+	sentAt time.Time
 }
 
 // NewProxy creates a new MongoDB proxy instance
@@ -87,14 +96,14 @@ func NewProxy(listenAddr, targetAddr string, opts ...ProxyOption) (*Proxy, error
 
 	// 初始化 OpenTelemetry
 	exporterType := telemetry.GetExporterTypeFromEnv()
-	shutdown, err := telemetry.SetupOTelSDK(ctx, "mongodb-proxy", "0.1.0", exporterType)
+	shutdown, err := telemetry.SetupOTelSDK(ctx, "gawamango", "0.3.0", exporterType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup OpenTelemetry: %v", err)
 	}
 	p.otelShutdown = shutdown
 
-	// 获取 tracer
-	p.tracer = otel.Tracer("github.com/ringsaturn/gawamango/internal/proxy")
+	// 获取 tracer，确保使用有意义的名称
+	p.tracer = otel.Tracer("gawamango")
 
 	return p, nil
 }
@@ -178,8 +187,7 @@ func isBrokenPipe(err error) bool {
 func (p *Proxy) handleConnection(clientConn net.Conn) {
 	defer p.wg.Done()
 
-	ctx, span := p.tracer.Start(p.ctx, "handle_connection")
-	defer span.End()
+	ctx := p.ctx
 
 	// Connect to the target MongoDB server.
 	serverConn, err := net.Dial("tcp", p.targetAddr)
@@ -187,9 +195,6 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		if p.logger != nil {
 			p.logger.Error("error connecting to target server", zap.Error(err))
 		}
-
-		span.SetStatus(codes.Error, "failed to connect to MongoDB server")
-		span.RecordError(err)
 
 		if err := clientConn.Close(); err != nil {
 			p.logger.Error("error closing client connection", zap.Error(err))
@@ -202,6 +207,8 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	inflight := &sync.Map{}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -209,11 +216,10 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	go func() {
 		defer wg.Done()
 
-		clientToServerCtx, clientToServerSpan := p.tracer.Start(connCtx, "client_to_server")
-		defer clientToServerSpan.End()
+		clientToServerCtx := connCtx
 
 		// 使用 otel instrumented 的reader和writer
-		_, err := p.copyWithTracing(clientToServerCtx, serverConn, clientConn, "client_to_server")
+		_, err := p.copyWithTracing(clientToServerCtx, serverConn, clientConn, "client_to_server", inflight)
 
 		// Half-close: signal FIN for this direction only
 		if tcp, ok := serverConn.(*net.TCPConn); ok {
@@ -229,8 +235,6 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		// Log error if not a normal termination
 		if err != nil && !isBrokenPipe(err) && connCtx.Err() == nil {
 			p.logger.Error("error copying from client to server", zap.Error(err))
-			clientToServerSpan.SetStatus(codes.Error, "error copying from client to server")
-			clientToServerSpan.RecordError(err)
 		}
 	}()
 
@@ -238,11 +242,10 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	go func() {
 		defer wg.Done()
 
-		serverToClientCtx, serverToClientSpan := p.tracer.Start(connCtx, "server_to_client")
-		defer serverToClientSpan.End()
+		serverToClientCtx := connCtx
 
 		// 使用 otel instrumented 的reader和writer
-		_, err := p.copyWithTracing(serverToClientCtx, clientConn, serverConn, "server_to_client")
+		_, err := p.copyWithTracing(serverToClientCtx, clientConn, serverConn, "server_to_client", inflight)
 
 		// Half-close: signal FIN for this direction only
 		if tcp, ok := clientConn.(*net.TCPConn); ok {
@@ -258,13 +261,21 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		// Log error if not a normal termination
 		if err != nil && !isBrokenPipe(err) && connCtx.Err() == nil {
 			p.logger.Error("error copying from server to client", zap.Error(err))
-			serverToClientSpan.SetStatus(codes.Error, "error copying from server to client")
-			serverToClientSpan.RecordError(err)
 		}
 	}()
 
 	// Wait for both directions to finish
 	wg.Wait()
+
+	// End any spans that never got a response (e.g., due to timeout or retry)
+	inflight.Range(func(key, value any) bool {
+		if span, ok := value.(trace.Span); ok {
+			span.SetStatus(codes.Error, "connection closed before response")
+			span.End()
+		}
+		inflight.Delete(key)
+		return true
+	})
 
 	// Close connections
 	if err := clientConn.Close(); err != nil {
@@ -276,7 +287,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 }
 
 // copyWithTracing 使用 OpenTelemetry 跟踪 MongoDB 消息从 src 到 dst 的传输
-func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reader, direction string) (written int64, err error) {
+func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reader, direction string, inflight *sync.Map) (written int64, err error) {
 	// 创建 buffer 用于读取消息头
 	buf := make([]byte, 16)
 
@@ -304,21 +315,59 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 			return written, err
 		}
 
-		// 创建 span 用于记录单个 MongoDB 消息的处理
-		_, msgSpan := p.tracer.Start(ctx, "mongodb_message")
-		msgSpan.SetAttributes(
-			attribute.Int("message.length", int(header.MessageLength)),
-			attribute.Int("request.id", int(header.RequestID)),
-			attribute.Int("response.to", int(header.ResponseTo)),
-			attribute.Int("op.code", int(header.OpCode)),
-			attribute.String("direction", direction),
+		// --- tracing logic implementing: write_to_server / mongo_processing / write_to_client ---
+		var (
+			rootSpan  trace.Span // the cmd_xxx span
+			writeSpan trace.Span // write_to_* span
+			procSpan  trace.Span // mongo_processing span
+			stateAny  any
+			ok        bool
 		)
+
+		// Case 1: client → server, this is a request (ResponseTo == 0)
+		if direction == "client_to_server" && header.ResponseTo == 0 {
+			// root span
+			_, rootSpan = p.tracer.Start(ctx, fmt.Sprintf("mongo.cmd_%d", header.RequestID))
+
+			// write_to_server span (child)
+			_, writeSpan = p.tracer.Start(trace.ContextWithSpan(ctx, rootSpan), "write_to_server")
+		}
+
+		// Case 2: server → client, this is a response
+		if direction == "server_to_client" && header.ResponseTo != 0 {
+			// pick the stored state
+			if stateAny, ok = inflight.LoadAndDelete(header.ResponseTo); ok {
+				st := stateAny.(*reqState)
+				rootSpan = st.span
+
+				// mongo_processing span: from sentAt until now
+				_, procSpan = p.tracer.Start(trace.ContextWithSpan(ctx, rootSpan),
+					"mongo_processing",
+					trace.WithTimestamp(st.sentAt))
+				procSpan.End() // end immediately with "now"
+				// write_to_client span (child)
+				_, writeSpan = p.tracer.Start(trace.ContextWithSpan(ctx, rootSpan), "write_to_client")
+			}
+		}
+
+		// common attributes
+		if rootSpan != nil {
+			rootSpan.SetAttributes(
+				attribute.Int("message.length", int(header.MessageLength)),
+				attribute.Int("request.id", int(header.RequestID)),
+				attribute.Int("response.to", int(header.ResponseTo)),
+				attribute.Int("op.code", int(header.OpCode)),
+				attribute.String("direction", direction),
+			)
+		}
 
 		// 3. 写入消息头到目标
 		if _, err := dst.Write(buf); err != nil {
-			msgSpan.RecordError(err)
-			msgSpan.SetStatus(codes.Error, "failed to write message header")
-			msgSpan.End()
+			if rootSpan != nil {
+				rootSpan.RecordError(err)
+				rootSpan.SetStatus(codes.Error, "failed to write message header")
+				rootSpan.End()
+			}
 			return written, err
 		}
 
@@ -331,9 +380,11 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 			bodyBuf := make([]byte, bodySize)
 			n, err := io.ReadFull(src, bodyBuf)
 			if err != nil {
-				msgSpan.RecordError(err)
-				msgSpan.SetStatus(codes.Error, "failed to read message body")
-				msgSpan.End()
+				if rootSpan != nil {
+					rootSpan.RecordError(err)
+					rootSpan.SetStatus(codes.Error, "failed to read message body")
+					rootSpan.End()
+				}
 				return written + int64(n), err
 			}
 			written += int64(n)
@@ -342,10 +393,12 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 			if header.ResponseTo == 0 && !p.silent {
 				cmd, err := protocol.ParseCommand(header.OpCode, bodyBuf)
 				if err == nil && cmd != nil {
-					msgSpan.SetAttributes(
-						attribute.String("mongodb.command", cmd.CommandName),
-						attribute.String("mongodb.database", cmd.Database),
-					)
+					if rootSpan != nil {
+						rootSpan.SetAttributes(
+							attribute.String("mongodb.command", cmd.CommandName),
+							attribute.String("mongodb.database", cmd.Database),
+						)
+					}
 
 					if p.logger != nil {
 						p.logger.Info("MongoDB Command",
@@ -360,14 +413,31 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 
 			// 写入消息体到目标
 			if _, err := dst.Write(bodyBuf); err != nil {
-				msgSpan.RecordError(err)
-				msgSpan.SetStatus(codes.Error, "failed to write message body")
-				msgSpan.End()
+				if rootSpan != nil {
+					rootSpan.RecordError(err)
+					rootSpan.SetStatus(codes.Error, "failed to write message body")
+					rootSpan.End()
+				}
 				return written, err
 			}
-		}
 
-		// 结束当前消息的 span
-		msgSpan.End()
+			// finish write_to_* span if it exists
+			if writeSpan != nil {
+				writeSpan.End()
+			}
+
+			// store reqState after finishing write_to_server
+			if direction == "client_to_server" && header.ResponseTo == 0 {
+				inflight.Store(header.RequestID, &reqState{
+					span:   rootSpan,
+					sentAt: time.Now(),
+				})
+			}
+
+			// end root span when response direction completed
+			if direction == "server_to_client" && rootSpan != nil {
+				rootSpan.End()
+			}
+		}
 	}
 }
