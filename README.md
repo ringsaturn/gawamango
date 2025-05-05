@@ -1,5 +1,8 @@
 # MangoPi - MongoDB Proxy
 
+> [!WARNING]
+> This project is not for production use.
+
 MangoPi is a minimal MongoDB proxy that transparently forwards MongoDB wire
 protocol messages between clients and servers.
 
