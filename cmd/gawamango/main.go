@@ -8,6 +8,8 @@ import (
 	"syscall"
 
 	"github.com/ringsaturn/gawamango/internal/proxy"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func main() {
@@ -15,10 +17,36 @@ func main() {
 	listenAddr := flag.String("listen", "localhost:27018", "Address to listen on")
 	targetAddr := flag.String("target", "localhost:27017", "Target MongoDB address")
 	silent := flag.Bool("silent", false, "Silent mode")
+	production := flag.Bool("production", false, "Production mode")
+
 	flag.Parse()
 
+	opts := []proxy.ProxyOption{
+		proxy.WithSilent(*silent),
+	}
+
+	{
+		var (
+			logger    *zap.Logger
+			loggerErr error
+		)
+		if *production {
+			logger, loggerErr = zap.NewProduction()
+		} else {
+			encoderConfig := zap.NewDevelopmentEncoderConfig()
+			encoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+			config := zap.NewDevelopmentConfig()
+			config.EncoderConfig = encoderConfig
+			logger, loggerErr = config.Build()
+		}
+		if loggerErr != nil {
+			log.Fatalf("Failed to create logger: %v", loggerErr)
+		}
+		opts = append(opts, proxy.WithLogger(logger))
+	}
+
 	// 创建代理实例
-	p, err := proxy.NewProxy(*listenAddr, *targetAddr, proxy.WithSilent(*silent))
+	p, err := proxy.NewProxy(*listenAddr, *targetAddr, opts...)
 	if err != nil {
 		log.Fatalf("Failed to create proxy: %v", err)
 	}

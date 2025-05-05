@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/ringsaturn/gawamango/internal/protocol"
+	"go.uber.org/zap"
 )
 
 type ProxyOption func(*Proxy)
@@ -20,6 +20,12 @@ type ProxyOption func(*Proxy)
 func WithSilent(silent bool) ProxyOption {
 	return func(p *Proxy) {
 		p.silent = silent
+	}
+}
+
+func WithLogger(logger *zap.Logger) ProxyOption {
+	return func(p *Proxy) {
+		p.logger = logger
 	}
 }
 
@@ -32,6 +38,7 @@ type Proxy struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	silent     bool
+	logger     *zap.Logger
 }
 
 // NewProxy creates a new MongoDB proxy instance
@@ -93,21 +100,25 @@ func (p *Proxy) acceptLoop() {
 	}
 }
 
-func loggingMsg(header *protocol.MsgHeader, body []byte) {
-	// 解析命令
-	cmd, err := protocol.ParseCommand(header.OpCode, body)
-	if err != nil {
-		fmt.Printf("Error parsing command: %v\n", err)
-		return
+func (p *Proxy) setupLoggingMsg() func(header *protocol.MsgHeader, body []byte) {
+	if p.logger == nil {
+		return nil
 	}
 
-	// 打印命令信息
-	cmdJSON, _ := json.MarshalIndent(cmd, "", "  ")
-	fmt.Printf("MongoDB Command:\n")
-	fmt.Printf("  Database: %s\n", cmd.Database)
-	fmt.Printf("  Command: %s\n", cmd.CommandName)
-	fmt.Printf("  Arguments: %s\n", string(cmdJSON))
-	fmt.Println("----------------------------------------")
+	return func(header *protocol.MsgHeader, body []byte) {
+		cmd, err := protocol.ParseCommand(header.OpCode, body)
+		if err != nil {
+			p.logger.Error("error parsing command", zap.Error(err))
+			return
+		}
+
+		p.logger.Info(
+			"MongoDB Command",
+			zap.String("database", cmd.Database),
+			zap.String("command", cmd.CommandName),
+			zap.Any("arguments", cmd.Arguments),
+		)
+	}
 }
 
 // isBrokenPipe reports whether the I/O error is the expected result of the peer
@@ -122,14 +133,16 @@ func isBrokenPipe(err error) bool {
 	}
 	if oe, ok := err.(*net.OpError); ok {
 		if se, ok := oe.Err.(*os.SyscallError); ok {
-			if se.Err == syscall.EPIPE || se.Err == syscall.ECONNRESET {
+			if se.Err == syscall.EPIPE || se.Err == syscall.ECONNRESET || se.Err == syscall.ENOTCONN {
 				return true
 			}
 		}
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection reset by peer")
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "socket is not connected") ||
+		strings.Contains(msg, "not connected")
 }
 
 func (p *Proxy) handleConnection(clientConn net.Conn) {
@@ -139,7 +152,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	serverConn, err := net.Dial("tcp", p.targetAddr)
 	if err != nil {
 		if err := clientConn.Close(); err != nil {
-			fmt.Printf("Error closing client connection: %v\n", err)
+			p.logger.Error("error closing client connection", zap.Error(err))
 		}
 		return
 	}
@@ -149,7 +162,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 
 	onMessageOps := []func(header *protocol.MsgHeader, body []byte){}
 	if !p.silent {
-		onMessageOps = append(onMessageOps, loggingMsg)
+		onMessageOps = append(onMessageOps, p.setupLoggingMsg())
 	}
 
 	onMessageFunc := func(header *protocol.MsgHeader, body []byte) {
@@ -169,17 +182,17 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 
 		// Half‑close: signal FIN for this direction only.
 		if tcp, ok := serverConn.(*net.TCPConn); ok {
-			if err := tcp.CloseWrite(); err != nil {
-				fmt.Printf("Error closing write on server connection: %v\n", err)
+			if err := tcp.CloseWrite(); err != nil && !isBrokenPipe(err) {
+				p.logger.Error("error closing write on server connection", zap.Error(err))
 			}
 		} else {
 			if err := serverConn.Close(); err != nil {
-				fmt.Printf("Error closing server connection: %v\n", err)
+				p.logger.Error("error closing server connection", zap.Error(err))
 			}
 		}
 
 		if err != nil && !isBrokenPipe(err) && p.ctx.Err() == nil {
-			fmt.Printf("Error copying from client to server: %v\n", err)
+			p.logger.Error("error copying from client to server", zap.Error(err))
 		}
 	}()
 
@@ -190,27 +203,27 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 
 		// Half‑close: signal FIN for this direction only.
 		if tcp, ok := clientConn.(*net.TCPConn); ok {
-			if err := tcp.CloseWrite(); err != nil {
-				fmt.Printf("Error closing write on client connection: %v\n", err)
+			if err := tcp.CloseWrite(); err != nil && !isBrokenPipe(err) {
+				p.logger.Error("error closing write on client connection", zap.Error(err))
 			}
 		} else {
 			if err := clientConn.Close(); err != nil {
-				fmt.Printf("Error closing client connection: %v\n", err)
+				p.logger.Error("error closing client connection", zap.Error(err))
 			}
 		}
 
 		if err != nil && !isBrokenPipe(err) && p.ctx.Err() == nil {
-			fmt.Printf("Error copying from server to client: %v\n", err)
+			p.logger.Error("error copying from server to client", zap.Error(err))
 		}
 	}()
 
 	// Wait for both directions to finish.
 	wg.Wait()
 	if err := clientConn.Close(); err != nil {
-		fmt.Printf("Error closing client connection: %v\n", err)
+		p.logger.Error("error closing client connection", zap.Error(err))
 	}
 	if err := serverConn.Close(); err != nil {
-		fmt.Printf("Error closing server connection: %v\n", err)
+		p.logger.Error("error closing server connection", zap.Error(err))
 	}
 }
 
