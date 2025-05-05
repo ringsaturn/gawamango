@@ -15,6 +15,14 @@ import (
 	"github.com/ringsaturn/mangopi/internal/protocol"
 )
 
+type ProxyOption func(*Proxy)
+
+func WithSilent(silent bool) ProxyOption {
+	return func(p *Proxy) {
+		p.silent = silent
+	}
+}
+
 // Proxy represents a MongoDB proxy instance
 type Proxy struct {
 	listenAddr string
@@ -23,17 +31,22 @@ type Proxy struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
+	silent     bool
 }
 
 // NewProxy creates a new MongoDB proxy instance
-func NewProxy(listenAddr, targetAddr string) (*Proxy, error) {
+func NewProxy(listenAddr, targetAddr string, opts ...ProxyOption) (*Proxy, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Proxy{
+	p := &Proxy{
 		listenAddr: listenAddr,
 		targetAddr: targetAddr,
 		ctx:        ctx,
 		cancel:     cancel,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }
 
 // Start begins accepting connections
@@ -78,13 +91,7 @@ func (p *Proxy) acceptLoop() {
 	}
 }
 
-var silent = os.Getenv("MANGOPROXY_SILENT") == "1"
-
 func loggingMsg(header *protocol.MsgHeader, body []byte) {
-	if silent {
-		return
-	}
-
 	// 解析命令
 	cmd, err := protocol.ParseCommand(header.OpCode, body)
 	if err != nil {
@@ -136,22 +143,23 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	onMessageOps := []func(header *protocol.MsgHeader, body []byte){}
+	if !p.silent {
+		onMessageOps = append(onMessageOps, loggingMsg)
+	}
+
+	onMessageFunc := func(header *protocol.MsgHeader, body []byte) {
+		for _, op := range onMessageOps {
+			op(header, body)
+		}
+	}
+
 	// client ➜ server
 	go func() {
 		defer wg.Done()
 		reader := &mongoReader{
-			conn: clientConn,
-			onMessage: func(header *protocol.MsgHeader, body []byte) {
-				// // Detect endSessions and close both ends early.
-				// cmd, err := protocol.ParseCommand(header.OpCode, body)
-				// if err == nil && strings.EqualFold(cmd.CommandName, "endSessions") {
-				// 	// Force both sockets to close; the copy goroutines will exit on error.
-				// 	clientConn.Close()
-				// 	serverConn.Close()
-				// 	return
-				// }
-				loggingMsg(header, body)
-			},
+			conn:      clientConn,
+			onMessage: onMessageFunc,
 		}
 		_, err := io.Copy(serverConn, reader)
 
