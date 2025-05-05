@@ -3,11 +3,14 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/ringsaturn/mangopi/internal/protocol"
 )
@@ -98,60 +101,93 @@ func loggingMsg(header *protocol.MsgHeader, body []byte) {
 	fmt.Println("----------------------------------------")
 }
 
+// isBrokenPipe reports whether the I/O error is the expected result of the peer
+// closing its receive side (EPIPE/ECONNRESET).  We treat these as normal
+// termination signals and suppress noisy logging.
+func isBrokenPipe(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	if oe, ok := err.(*net.OpError); ok {
+		if se, ok := oe.Err.(*os.SyscallError); ok {
+			if se.Err == syscall.EPIPE || se.Err == syscall.ECONNRESET {
+				return true
+			}
+		}
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer")
+}
+
 func (p *Proxy) handleConnection(clientConn net.Conn) {
 	defer p.wg.Done()
-	defer clientConn.Close()
 
-	// 连接到目标MongoDB服务器
+	// Connect to the target MongoDB server.
 	serverConn, err := net.Dial("tcp", p.targetAddr)
 	if err != nil {
+		clientConn.Close()
 		return
 	}
-	defer serverConn.Close()
 
-	// 创建双向数据转发
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// 客户端到服务器的转发
+	// client ➜ server
 	go func() {
 		defer wg.Done()
-		// 创建自定义的Reader来解析MongoDB消息
 		reader := &mongoReader{
 			conn: clientConn,
 			onMessage: func(header *protocol.MsgHeader, body []byte) {
+				// // Detect endSessions and close both ends early.
+				// cmd, err := protocol.ParseCommand(header.OpCode, body)
+				// if err == nil && strings.EqualFold(cmd.CommandName, "endSessions") {
+				// 	// Force both sockets to close; the copy goroutines will exit on error.
+				// 	clientConn.Close()
+				// 	serverConn.Close()
+				// 	return
+				// }
 				loggingMsg(header, body)
 			},
 		}
 		_, err := io.Copy(serverConn, reader)
-		if err != nil && p.ctx.Err() == nil {
+
+		// Half‑close: signal FIN for this direction only.
+		if tcp, ok := serverConn.(*net.TCPConn); ok {
+			tcp.CloseWrite()
+		} else {
+			serverConn.Close()
+		}
+
+		if err != nil && !isBrokenPipe(err) && p.ctx.Err() == nil {
 			fmt.Printf("Error copying from client to server: %v\n", err)
 		}
 	}()
 
-	// 服务器到客户端的转发
+	// server ➜ client
 	go func() {
 		defer wg.Done()
 		_, err := io.Copy(clientConn, serverConn)
-		if err != nil && p.ctx.Err() == nil {
+
+		// Half‑close: signal FIN for this direction only.
+		if tcp, ok := clientConn.(*net.TCPConn); ok {
+			tcp.CloseWrite()
+		} else {
+			clientConn.Close()
+		}
+
+		if err != nil && !isBrokenPipe(err) && p.ctx.Err() == nil {
 			fmt.Printf("Error copying from server to client: %v\n", err)
 		}
 	}()
 
-	// 等待上下文取消或连接关闭
-	select {
-	case <-p.ctx.Done():
-		clientConn.Close()
-		serverConn.Close()
-	case <-func() chan struct{} {
-		done := make(chan struct{})
-		go func() {
-			wg.Wait()
-			close(done)
-		}()
-		return done
-	}():
-	}
+	// Wait for both directions to finish.
+	wg.Wait()
+	clientConn.Close()
+	serverConn.Close()
 }
 
 // mongoReader 是一个自定义的io.Reader实现，用于解析MongoDB消息
