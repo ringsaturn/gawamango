@@ -389,6 +389,7 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 						rootSpan.SetAttributes(
 							attribute.String("mongodb.command", cmd.CommandName),
 							attribute.String("mongodb.database", cmd.Database),
+							// attribute.String("mongodb.arguments", fmt.Sprintf("%v", cmd.Arguments)),
 						)
 					}
 					// save for response side
