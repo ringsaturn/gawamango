@@ -96,7 +96,7 @@ func NewProxy(listenAddr, targetAddr string, opts ...ProxyOption) (*Proxy, error
 
 	// 初始化 OpenTelemetry
 	exporterType := telemetry.GetExporterTypeFromEnv()
-	shutdown, err := telemetry.SetupOTelSDK(ctx, "gawamango", "0.3.0", exporterType)
+	shutdown, err := telemetry.SetupOTelSDK(ctx, "gawamango", Version, exporterType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup OpenTelemetry: %v", err)
 	}
