@@ -21,28 +21,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// contextKey 是用于在 context 中存储值的键类型
-type contextKey string
-
-const (
-	// 用于存储请求开始时间
-	startTimeKey contextKey = "start_time"
-	// 用于存储 MongoDB 请求 ID
-	requestIDKey contextKey = "request_id"
-	// 用于存储 MongoDB 命令
-	commandKey contextKey = "command"
-	// 用于存储数据库名称
-	databaseKey contextKey = "database"
-	// 用于存储客户端到代理的时间
-	clientToProxyTimeKey contextKey = "client_to_proxy_time"
-	// 用于存储代理到服务器的时间
-	proxyToServerTimeKey contextKey = "proxy_to_server_time"
-	// 用于存储服务器到代理的时间
-	serverToProxyTimeKey contextKey = "server_to_proxy_time"
-	// 用于存储代理到客户端的时间
-	proxyToClientTimeKey contextKey = "proxy_to_client_time"
-)
-
 type ProxyOption func(*Proxy)
 
 func WithSilent(silent bool) ProxyOption {

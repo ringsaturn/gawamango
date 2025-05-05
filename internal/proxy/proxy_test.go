@@ -18,7 +18,7 @@ type simpleEchoProxy struct {
 	wg       sync.WaitGroup
 }
 
-func newSimpleEchoProxy(addr string) (*simpleEchoProxy, error) {
+func newSimpleEchoProxy(_ string) (*simpleEchoProxy, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &simpleEchoProxy{
 		ctx:    ctx,
