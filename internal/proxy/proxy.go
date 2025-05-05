@@ -53,8 +53,10 @@ type Proxy struct {
 
 // reqState keeps the root span and the time the request finished writing to MongoDB
 type reqState struct {
-	span   trace.Span
-	sentAt time.Time
+	span        trace.Span
+	sentAt      time.Time
+	commandName string
+	database    string
 }
 
 // NewProxy creates a new MongoDB proxy instance
@@ -269,6 +271,8 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 	// 创建 buffer 用于读取消息头
 	buf := make([]byte, 16)
 
+	var cmdName, dbName string
+
 	for {
 		// 检查 context 是否已取消
 		select {
@@ -318,6 +322,14 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 				st := stateAny.(*reqState)
 				rootSpan = st.span
 
+				// propagate cached command/database attributes if not already set
+				if st.commandName != "" {
+					rootSpan.SetAttributes(
+						attribute.String("mongodb.command", st.commandName),
+						attribute.String("mongodb.database", st.database),
+					)
+				}
+
 				// mongo_processing span: from sentAt until now
 				_, procSpan = p.tracer.Start(trace.ContextWithSpan(ctx, rootSpan),
 					"mongo_processing",
@@ -330,13 +342,15 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 
 		// common attributes
 		if rootSpan != nil {
-			rootSpan.SetAttributes(
+			attrs := []attribute.KeyValue{
 				attribute.Int("message.length", int(header.MessageLength)),
 				attribute.Int("request.id", int(header.RequestID)),
 				attribute.Int("response.to", int(header.ResponseTo)),
 				attribute.Int("op.code", int(header.OpCode)),
+				attribute.String("op.name", protocol.OpcodeToName(header.OpCode)),
 				attribute.String("direction", direction),
-			)
+			}
+			rootSpan.SetAttributes(attrs...)
 		}
 
 		// 3. 写入消息头到目标
@@ -377,6 +391,8 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 							attribute.String("mongodb.database", cmd.Database),
 						)
 					}
+					// save for response side
+					cmdName, dbName = cmd.CommandName, cmd.Database
 
 					if p.logger != nil {
 						p.logger.Info("MongoDB Command",
@@ -407,8 +423,10 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 			// store reqState after finishing write_to_server
 			if direction == "client_to_server" && header.ResponseTo == 0 {
 				inflight.Store(header.RequestID, &reqState{
-					span:   rootSpan,
-					sentAt: time.Now(),
+					span:        rootSpan,
+					sentAt:      time.Now(),
+					commandName: cmdName,
+					database:    dbName,
 				})
 			}
 
