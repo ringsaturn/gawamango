@@ -133,6 +133,26 @@ MongoDB Command:
 
 - `-listen`: Address to listen on (default: localhost:27018)
 - `-target`: Target MongoDB address (default: localhost:27017)
+- `-silent`: Silent mode, disables command logging
+- `-production`: Production mode for logger configuration
+
+### Environment Variables
+
+- `OTEL_EXPORTER_TYPE`: OpenTelemetry exporter type to use:
+  - `stdout`: Prints trace data directly to console (useful for debugging)
+  - `otlp`: Uses OTLP exporter to send trace data to an OpenTelemetry collector (default)
+
+Example of using the stdout exporter for local debugging:
+
+```bash
+OTEL_EXPORTER_TYPE=stdout gawamango
+```
+
+When using OTLP exporter, you can configure the endpoint using the standard OpenTelemetry environment variables:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 gawamango
+```
 
 ## Development
 
