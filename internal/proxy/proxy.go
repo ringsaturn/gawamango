@@ -24,6 +24,16 @@ import (
 // slowThreshold defines the latency above which a query is considered "slow".
 const slowThreshold = 500 * time.Millisecond
 
+var slowQueryWhitelistCommands = map[string]int{
+	"hello":          1,
+	"maxAwaitTimeMS": 1,
+}
+
+func isSlowQueryWhitelistCommand(commandName string) bool {
+	v, ok := slowQueryWhitelistCommands[commandName]
+	return ok && v == 1
+}
+
 type ProxyOption func(*Proxy)
 
 func WithSilent(silent bool) ProxyOption {
@@ -345,8 +355,7 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 				)
 				// ----- slow‑query detection -----
 				elapsed := time.Since(st.sentAt)
-				// Skip slow query detection for "hello" commands
-				if elapsed > slowThreshold && st.commandName != "hello" {
+				if elapsed > slowThreshold && !isSlowQueryWhitelistCommand(st.commandName) {
 					// Add arguments to the span attributes
 					rootSpan.SetAttributes(
 						attribute.Bool("mongodb.slow_query", true),
