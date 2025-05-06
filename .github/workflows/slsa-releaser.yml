@@ -6,46 +6,77 @@ on:
     tags:
       - 'v*'
 
+permissions: read-all
+
 jobs:
-  # Combined job for building, verifying and releasing
-  build-and-release:
+  # Generate ldflags dynamically.
+  args:
+    runs-on: ubuntu-latest
+    outputs:
+      commit-date: ${{ steps.ldflags.outputs.commit-date }}
+      commit: ${{ steps.ldflags.outputs.commit }}
+      version: ${{ steps.ldflags.outputs.version }}
+      tree-state: ${{ steps.ldflags.outputs.tree-state }}
+    steps:
+      - id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: ldflags
+        run: |
+          echo "commit-date=$(git log --date=iso8601-strict -1 --pretty=%ct)" >> "$GITHUB_OUTPUT"
+          echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tree-state=$(if git diff --quiet; then echo "clean"; else echo "dirty"; fi)" >> "$GITHUB_OUTPUT"
+
+  # Trusted builder using the reusable workflow.
+  build:
+    permissions:
+      id-token: write  # For SLSA provenance
+      contents: write  # For creating releases
+      actions: read    # For workflow access
+    needs: args
+    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
+    with:
+      go-version: '1.24'
+      config-file: .slsa-goreleaser.yml
+      evaluated-envs: |
+        COMMIT_DATE: ${{ needs.args.outputs.commit-date }}
+        COMMIT: ${{ needs.args.outputs.commit }}
+        VERSION: ${{ needs.args.outputs.version }}
+        TREE_STATE: ${{ needs.args.outputs.tree-state }}
+        LDFLAGS: -s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${{ needs.args.outputs.version }}
+
+  # Verify and release
+  verify-and-release:
     permissions:
       contents: write  # For creating releases
-      id-token: write  # For SLSA provenance
       actions: read    # For workflow access
+    needs: [build, args]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # Prepare build variables
-      - name: Prepare build variables
-        id: prepare
-        run: |
-          # Strip 'refs/tags/' from the beginning of the ref
-          VERSION=${GITHUB_REF#refs/tags/}
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-          echo "LDFLAGS=-s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${VERSION}" >> $GITHUB_ENV
-
-      # Use the SLSA builder directly (not as a reusable workflow)
-      - name: Build with SLSA
-        uses: slsa-framework/slsa-github-generator/actions/builder@v1.9.0
-        id: builder
-        with:
-          go-version: '1.24'
-          # Arguments for the builder
-          config-file: .slsa-goreleaser.yml
-          evaluated-envs: |
-            LDFLAGS: ${{ env.LDFLAGS }}
-
       # Install SLSA verifier
       - name: Install SLSA verifier
         uses: slsa-framework/slsa-verifier/actions/installer@v2.4.1
 
-      # Verify the built artifacts
-      - name: Verify built artifacts
+      # Download the artifacts and provenance
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ needs.build.outputs.go-binary-name }}
+          path: artifacts
+      
+      - name: Download provenance
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ needs.build.outputs.go-provenance-name }}
+          path: artifacts
+
+      # Verify the provenance
+      - name: Verify provenance
         run: |
-          for binary in ${{ steps.builder.outputs.artifacts-path }}/*; do
+          for binary in artifacts/*; do
             if [[ -f "$binary" && ! "$binary" =~ \.intoto\.jsonl$ ]]; then
               echo "Verifying: $binary"
               slsa-verifier verify-artifact \
@@ -60,11 +91,11 @@ jobs:
       - name: Create GitHub Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.builder.outputs.artifacts-path }}/*
+          files: artifacts/*
           generate_release_notes: true
-          name: ${{ env.VERSION }}
+          name: ${{ needs.args.outputs.version }}
           body: |
-            ## gawamango ${{ env.VERSION }}
+            ## gawamango ${{ needs.args.outputs.version }}
             
             This release was built with [SLSA Level 3](https://slsa.dev) compliance, 
             providing verifiable build provenance.
