@@ -8,18 +8,28 @@ func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
 	// Re-run the stringer command to generate them again.
 	var x [1]struct{}
+	_ = x[OP_QUERY-2004]
 	_ = x[OP_COMPRESSED-2012]
 	_ = x[OP_MSG-2013]
 }
 
-const _OpCode_name = "OP_COMPRESSEDOP_MSG"
+const (
+	_OpCode_name_0 = "OP_QUERY"
+	_OpCode_name_1 = "OP_COMPRESSEDOP_MSG"
+)
 
-var _OpCode_index = [...]uint8{0, 13, 19}
+var (
+	_OpCode_index_1 = [...]uint8{0, 13, 19}
+)
 
 func (i OpCode) String() string {
-	i -= 2012
-	if i < 0 || i >= OpCode(len(_OpCode_index)-1) {
-		return "OpCode(" + strconv.FormatInt(int64(i+2012), 10) + ")"
+	switch {
+	case i == 2004:
+		return _OpCode_name_0
+	case 2012 <= i && i <= 2013:
+		i -= 2012
+		return _OpCode_name_1[_OpCode_index_1[i]:_OpCode_index_1[i+1]]
+	default:
+		return "OpCode(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _OpCode_name[_OpCode_index[i]:_OpCode_index[i+1]]
 }

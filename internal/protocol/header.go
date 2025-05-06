@@ -47,6 +47,7 @@ func SerializeHeader(header *MsgHeader) []byte {
 type OpCode int32
 
 const (
+	OP_QUERY      OpCode = 2004 // It's "deprecated" in doc, but still used in hello command when client init.
 	OP_COMPRESSED OpCode = 2012
 	OP_MSG        OpCode = 2013
 )

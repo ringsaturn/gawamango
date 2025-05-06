@@ -19,6 +19,56 @@ func ParseCommand(opCode OpCode, body []byte) (*Command, error) {
 	}
 
 	switch opCode {
+
+	case OP_QUERY:
+		// OP_QUERY format:
+		// flags (int32)
+		// collection name (cstring)
+		// number to skip (int32)
+		// number to return (int32)
+		// query document (BSON)
+		// return fields selector (BSON, optional)
+
+		if len(body) < 4 {
+			return nil, fmt.Errorf("message too short")
+		}
+
+		// Skip flags
+		body = body[4:]
+
+		// Get collection name
+		collectionEnd := 0
+		for collectionEnd < len(body) && body[collectionEnd] != 0 {
+			collectionEnd++
+		}
+		if collectionEnd >= len(body) {
+			return nil, fmt.Errorf("invalid collection name")
+		}
+		collection := string(body[:collectionEnd])
+		body = body[collectionEnd+1:]
+
+		// Skip number to skip and number to return
+		if len(body) < 8 {
+			return nil, fmt.Errorf("message too short")
+		}
+		body = body[8:]
+
+		// Parse query document
+		doc, err := parseBSON(body)
+		if err != nil {
+			return nil, err
+		}
+
+		// Extract command name from query document
+		for k, v := range doc {
+			cmd.CommandName = k
+			cmd.Arguments[k] = v
+			break
+		}
+
+		// Add collection to arguments
+		cmd.Arguments["collection"] = collection
+
 	case OP_MSG:
 		// OP_MSG format:
 		// flags (int32)
