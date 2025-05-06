@@ -12,43 +12,19 @@ type Command struct {
 	Arguments   map[string]interface{} `json:"arguments"`
 }
 
-// OpcodeToName converts MongoDB wire protocol opcodes to human‑readable names.
-// Only the opcodes used by modern servers are listed; others fall back to "UNKNOWN".
-func OpcodeToName(op int32) string {
-	switch op {
-	case 1:
-		return "OP_REPLY"
-	case 2001:
-		return "OP_UPDATE"
-	case 2002:
-		return "OP_INSERT"
-	case 2003:
-		return "RESERVED"
-	case 2004:
-		return "OP_QUERY"
-	case 2005:
-		return "OP_GET_MORE"
-	case 2006:
-		return "OP_DELETE"
-	case 2007:
-		return "OP_KILL_CURSORS"
-	case 2012:
-		return "OP_COMPRESSED"
-	case 2013:
-		return "OP_MSG"
-	default:
-		return "UNKNOWN"
-	}
-}
-
 // ParseCommand parses a MongoDB message body to extract the command
 func ParseCommand(opCode int32, body []byte) (*Command, error) {
 	cmd := &Command{
 		Arguments: make(map[string]interface{}),
 	}
 
+	// Only need to handle OP_MSG and OP_COMPRESSED.
+	//
+	// > Starting in MongoDB 5.1, OP_MSG and OP_COMPRESSED are the only supported opcodes to send requests to a MongoDB server.
+	//
+	// https://www.mongodb.com/docs/manual/legacy-opcodes/
 	switch opCode {
-	case OpMsg:
+	case OP_MSG:
 		// OP_MSG format:
 		// flags (int32)
 		// sections (array of sections)
@@ -91,54 +67,12 @@ func ParseCommand(opCode int32, body []byte) (*Command, error) {
 			cmd.Database = db
 		}
 
-	case OpQuery:
-		// OP_QUERY format:
-		// flags (int32)
-		// collection name (cstring)
-		// number to skip (int32)
-		// number to return (int32)
-		// query document (BSON)
-		// return fields selector (BSON, optional)
-
-		if len(body) < 4 {
-			return nil, fmt.Errorf("message too short")
-		}
-
-		// Skip flags
-		body = body[4:]
-
-		// Get collection name
-		collectionEnd := 0
-		for collectionEnd < len(body) && body[collectionEnd] != 0 {
-			collectionEnd++
-		}
-		if collectionEnd >= len(body) {
-			return nil, fmt.Errorf("invalid collection name")
-		}
-		collection := string(body[:collectionEnd])
-		body = body[collectionEnd+1:]
-
-		// Skip number to skip and number to return
-		if len(body) < 8 {
-			return nil, fmt.Errorf("message too short")
-		}
-		body = body[8:]
-
-		// Parse query document
-		doc, err := parseBSON(body)
-		if err != nil {
-			return nil, err
-		}
-
-		// Extract command name from query document
-		for k, v := range doc {
-			cmd.CommandName = k
-			cmd.Arguments[k] = v
-			break
-		}
-
-		// Add collection to arguments
-		cmd.Arguments["collection"] = collection
+	// TODO
+	// case OP_COMPRESSED:
+	// 	// OP_COMPRESSED format:
+	// 	// flags (int32)
+	// 	// sections (array of sections)
+	// 	// checksum (optional, uint32)
 
 	default:
 		return nil, fmt.Errorf("unsupported opcode: %d", opCode)
