@@ -30,46 +30,22 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tree-state=$(if git diff --quiet; then echo "clean"; else echo "dirty"; fi)" >> "$GITHUB_OUTPUT"
 
-  # SLSA builder - build only Linux AMD64
+  # SLSA builder as a reusable workflow
   build:
-    needs: args
+    needs: [args]
     permissions:
       id-token: write  # For SLSA provenance
       contents: write  # For creating releases
       actions: read    # For workflow access
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Create SLSA config file
-        run: |
-          cat > .slsa-goreleaser.yml << 'EOF'
-          version: 1
-          goos: linux
-          goarch: amd64
-          env:
-            - CGO_ENABLED=0
-          binary: gawamango
-          dir: .
-          main: ./cmd/gawamango/main.go
-          ldflags:
-            - '{{ .Env.LDFLAGS }}'
-          flags:
-            - -trimpath
-          EOF
-
-      - name: Use SLSA builder
-        uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
-        with:
-          go-version: '1.24'
-          config-file: .slsa-goreleaser.yml
-          evaluated-envs: |
-            COMMIT_DATE: ${{ needs.args.outputs.commit-date }}
-            COMMIT: ${{ needs.args.outputs.commit }}
-            VERSION: ${{ needs.args.outputs.version }}
-            TREE_STATE: ${{ needs.args.outputs.tree-state }}
-            LDFLAGS: -s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${{ needs.args.outputs.version }}
+    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
+    with:
+      go-version: '1.24'
+      evaluated-envs: |
+        COMMIT_DATE: ${{ needs.args.outputs.commit-date }}
+        COMMIT: ${{ needs.args.outputs.commit }}
+        VERSION: ${{ needs.args.outputs.version }}
+        TREE_STATE: ${{ needs.args.outputs.tree-state }}
+        LDFLAGS: -s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${{ needs.args.outputs.version }}
 
   # Verify and release
   verify-and-release:
