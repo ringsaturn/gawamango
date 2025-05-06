@@ -334,12 +334,18 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 				}
 
 				// mongo_processing span: from sentAt until now
-				_, procSpan = p.tracer.Start(trace.ContextWithSpan(ctx, rootSpan),
+				_, procSpan = p.tracer.Start(
+					trace.ContextWithSpan(ctx, rootSpan),
 					"mongo_processing",
-					trace.WithTimestamp(st.sentAt))
+					trace.WithTimestamp(st.sentAt),
+				)
 				procSpan.End() // end immediately with "now"
 				// write_to_client span (child)
-				_, writeSpan = p.tracer.Start(trace.ContextWithSpan(ctx, rootSpan), "write_to_client")
+				_, writeSpan = p.tracer.Start(
+					trace.ContextWithSpan(ctx, rootSpan),
+					"write_to_client",
+					trace.WithTimestamp(st.sentAt),
+				)
 				// ----- slow‑query detection -----
 				elapsed := time.Since(st.sentAt)
 				if elapsed > slowThreshold {

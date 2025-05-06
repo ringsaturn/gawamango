@@ -63,13 +63,13 @@ jobs:
 
       # Download artifacts
       - name: Download binary
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build.outputs.go-binary-name }}
           path: artifacts
       
       - name: Download provenance
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build.outputs.go-provenance-name }}
           path: artifacts
