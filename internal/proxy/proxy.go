@@ -319,7 +319,7 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 		if direction == "server_to_client" && header.ResponseTo != 0 {
 			// pick the stored state
 			if stateAny, ok = inflight.LoadAndDelete(header.ResponseTo); ok {
-				st := stateAny.(reqState)
+				st := stateAny.(*reqState)
 				rootSpan = st.span
 
 				// propagate cached command/database attributes if not already set
