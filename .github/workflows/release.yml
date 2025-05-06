@@ -73,7 +73,7 @@ jobs:
 
       # Generate SLSA provenance
       - name: Generate SLSA provenance
-        uses: slsa-framework/slsa-github-generator@v1.10.0
+        uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
         with:
           artifact-path: dist/gawamango
           output-path: dist/gawamango.intoto.jsonl
