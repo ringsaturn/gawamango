@@ -50,8 +50,6 @@ type Proxy struct {
 	logger       *zap.Logger
 	tracer       trace.Tracer
 	otelShutdown func(context.Context) error
-	// requestID -> span (kept until the matching response arrives)
-	// inflight sync.Map // removed as per instructions
 }
 
 // reqState keeps the root span and the time the request finished writing to MongoDB
@@ -388,7 +386,7 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 				attribute.Int("request.id", int(header.RequestID)),
 				attribute.Int("response.to", int(header.ResponseTo)),
 				attribute.Int("op.code", int(header.OpCode)),
-				attribute.String("op.name", protocol.OpcodeToName(header.OpCode)),
+				attribute.String("op.name", header.OpCode.String()),
 				attribute.String("direction", direction),
 			}
 			rootSpan.SetAttributes(attrs...)

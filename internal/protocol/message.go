@@ -13,16 +13,11 @@ type Command struct {
 }
 
 // ParseCommand parses a MongoDB message body to extract the command
-func ParseCommand(opCode int32, body []byte) (*Command, error) {
+func ParseCommand(opCode OpCode, body []byte) (*Command, error) {
 	cmd := &Command{
 		Arguments: make(map[string]interface{}),
 	}
 
-	// Only need to handle OP_MSG and OP_COMPRESSED.
-	//
-	// > Starting in MongoDB 5.1, OP_MSG and OP_COMPRESSED are the only supported opcodes to send requests to a MongoDB server.
-	//
-	// https://www.mongodb.com/docs/manual/legacy-opcodes/
 	switch opCode {
 	case OP_MSG:
 		// OP_MSG format:
