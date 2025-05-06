@@ -1,0 +1,35 @@
+version: 1
+
+# Build the main gawamango binary
+goos: 
+  - linux
+  - darwin
+  - windows
+
+goarch:
+  - amd64
+  - arm64
+
+env:
+  - CGO_ENABLED=0
+
+# Binary name will be gawamango or gawamango.exe 
+binary: >-
+  {{ if eq .Os "windows" }}gawamango.exe{{ else }}gawamango{{ end }}
+
+# Main directory for the build
+dir: .
+
+# Root main.go file to build
+main: ./cmd/gawamango/main.go
+
+# LDFLAGS to pass to the Go compiler
+ldflags: 
+  - '{{ .Env.LDFLAGS }}'
+
+# Ensure binary is built with Go modules
+goproxy: https://proxy.golang.org
+
+# Build with -trimpath
+flags:
+  - -trimpath 

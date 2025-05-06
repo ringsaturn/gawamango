@@ -1,0 +1,85 @@
+name: SLSA Go Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # Combined job for building, verifying and releasing
+  build-and-release:
+    permissions:
+      contents: write  # For creating releases
+      id-token: write  # For SLSA provenance
+      actions: read    # For workflow access
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Prepare build variables
+      - name: Prepare build variables
+        id: prepare
+        run: |
+          # Strip 'refs/tags/' from the beginning of the ref
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "LDFLAGS=-s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${VERSION}" >> $GITHUB_ENV
+
+      # Use the SLSA builder directly (not as a reusable workflow)
+      - name: Build with SLSA
+        uses: slsa-framework/slsa-github-generator/actions/builder@v1.9.0
+        id: builder
+        with:
+          go-version: '1.24'
+          # Arguments for the builder
+          config-file: .slsa-goreleaser.yml
+          evaluated-envs: |
+            LDFLAGS: ${{ env.LDFLAGS }}
+
+      # Install SLSA verifier
+      - name: Install SLSA verifier
+        uses: slsa-framework/slsa-verifier/actions/installer@v2.4.1
+
+      # Verify the built artifacts
+      - name: Verify built artifacts
+        run: |
+          for binary in ${{ steps.builder.outputs.artifacts-path }}/*; do
+            if [[ -f "$binary" && ! "$binary" =~ \.intoto\.jsonl$ ]]; then
+              echo "Verifying: $binary"
+              slsa-verifier verify-artifact \
+                --provenance-path "${binary}.intoto.jsonl" \
+                --artifact-path "$binary" \
+                --source-uri "github.com/${{ github.repository }}" \
+                --source-tag "${{ github.ref_name }}"
+            fi
+          done
+
+      # Create GitHub release and upload assets
+      - name: Create GitHub Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.builder.outputs.artifacts-path }}/*
+          generate_release_notes: true
+          name: ${{ env.VERSION }}
+          body: |
+            ## gawamango ${{ env.VERSION }}
+            
+            This release was built with [SLSA Level 3](https://slsa.dev) compliance, 
+            providing verifiable build provenance.
+            
+            ### Verification
+            To verify the binaries, install the SLSA verifier:
+            ```
+            go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+            ```
+            
+            Then verify an artifact:
+            ```
+            slsa-verifier verify-artifact \
+              --provenance-path <file>.intoto.jsonl \
+              --artifact-path <file> \
+              --source-uri github.com/${{ github.repository }} \
+              --source-tag ${{ github.ref_name }}
+            ```
