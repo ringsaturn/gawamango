@@ -21,6 +21,9 @@ import (
 	"go.uber.org/zap"
 )
 
+// slowThreshold defines the latency above which a query is considered “slow”.
+const slowThreshold = 500 * time.Millisecond
+
 type ProxyOption func(*Proxy)
 
 func WithSilent(silent bool) ProxyOption {
@@ -337,6 +340,22 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 				procSpan.End() // end immediately with "now"
 				// write_to_client span (child)
 				_, writeSpan = p.tracer.Start(trace.ContextWithSpan(ctx, rootSpan), "write_to_client")
+				// ----- slow‑query detection -----
+				elapsed := time.Since(st.sentAt)
+				if elapsed > slowThreshold {
+					rootSpan.SetAttributes(
+						attribute.Bool("mongodb.slow_query", true),
+						attribute.Int64("mongodb.elapsed_ms", elapsed.Milliseconds()),
+					)
+					rootSpan.SetStatus(codes.Error, "slow query")
+					if p.logger != nil {
+						p.logger.Warn("slow query detected",
+							zap.String("command", st.commandName),
+							zap.String("database", st.database),
+							zap.Duration("elapsed", elapsed))
+					}
+				}
+				// --------------------------------
 			}
 		}
 
