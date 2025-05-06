@@ -21,7 +21,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// slowThreshold defines the latency above which a query is considered “slow”.
+// slowThreshold defines the latency above which a query is considered "slow".
 const slowThreshold = 500 * time.Millisecond
 
 type ProxyOption func(*Proxy)
@@ -60,6 +60,7 @@ type reqState struct {
 	sentAt      time.Time
 	commandName string
 	database    string
+	arguments   map[string]interface{}
 }
 
 // NewProxy creates a new MongoDB proxy instance
@@ -274,7 +275,13 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 	// 创建 buffer 用于读取消息头
 	buf := make([]byte, 16)
 
-	var cmdName, dbName string
+	var (
+		rootSpan  trace.Span // the cmd_xxx span
+		writeSpan trace.Span // write_to_* span
+		procSpan  trace.Span // mongo_processing span
+		stateAny  any
+		ok        bool
+	)
 
 	for {
 		// 检查 context 是否已取消
@@ -301,14 +308,6 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 		}
 
 		// --- tracing logic implementing: write_to_server / mongo_processing / write_to_client ---
-		var (
-			rootSpan  trace.Span // the cmd_xxx span
-			writeSpan trace.Span // write_to_* span
-			procSpan  trace.Span // mongo_processing span
-			stateAny  any
-			ok        bool
-		)
-
 		// Case 1: client → server, this is a request (ResponseTo == 0)
 		if direction == "client_to_server" && header.ResponseTo == 0 {
 			// root span
@@ -322,7 +321,7 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 		if direction == "server_to_client" && header.ResponseTo != 0 {
 			// pick the stored state
 			if stateAny, ok = inflight.LoadAndDelete(header.ResponseTo); ok {
-				st := stateAny.(*reqState)
+				st := stateAny.(reqState)
 				rootSpan = st.span
 
 				// propagate cached command/database attributes if not already set
@@ -349,16 +348,33 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 				// ----- slow‑query detection -----
 				elapsed := time.Since(st.sentAt)
 				if elapsed > slowThreshold {
+					// Add arguments to the span attributes
 					rootSpan.SetAttributes(
 						attribute.Bool("mongodb.slow_query", true),
 						attribute.Int64("mongodb.elapsed_ms", elapsed.Milliseconds()),
 					)
+
+					// Add query arguments information if available
+					if len(st.arguments) > 0 {
+						rootSpan.SetAttributes(
+							attribute.String("mongodb.arguments", fmt.Sprintf("%v", st.arguments)),
+						)
+					}
+
 					rootSpan.SetStatus(codes.Error, "slow query")
 					if p.logger != nil {
-						p.logger.Warn("slow query detected",
+						logArgs := []zap.Field{
 							zap.String("command", st.commandName),
 							zap.String("database", st.database),
-							zap.Duration("elapsed", elapsed))
+							zap.Duration("elapsed", elapsed),
+						}
+
+						// Add arguments to log if available
+						if len(st.arguments) > 0 {
+							logArgs = append(logArgs, zap.Any("arguments", st.arguments))
+						}
+
+						p.logger.Warn("slow query detected", logArgs...)
 					}
 				}
 				// --------------------------------
@@ -418,8 +434,6 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 						)
 					}
 					// save for response side
-					cmdName, dbName = cmd.CommandName, cmd.Database
-
 					if p.logger != nil {
 						p.logger.Info("MongoDB Command",
 							zap.String("direction", direction),
@@ -427,6 +441,17 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 							zap.String("command", cmd.CommandName),
 							zap.String("database", cmd.Database),
 						)
+					}
+
+					// Save arguments for slow query detection
+					if direction == "client_to_server" && header.ResponseTo == 0 && rootSpan != nil {
+						inflight.Store(header.RequestID, &reqState{
+							span:        rootSpan,
+							sentAt:      time.Now(),
+							commandName: cmd.CommandName,
+							database:    cmd.Database,
+							arguments:   cmd.Arguments,
+						})
 					}
 				}
 			}
@@ -444,16 +469,6 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 			// finish write_to_* span if it exists
 			if writeSpan != nil {
 				writeSpan.End()
-			}
-
-			// store reqState after finishing write_to_server
-			if direction == "client_to_server" && header.ResponseTo == 0 {
-				inflight.Store(header.RequestID, &reqState{
-					span:        rootSpan,
-					sentAt:      time.Now(),
-					commandName: cmdName,
-					database:    dbName,
-				})
 			}
 
 			// end root span when response direction completed
