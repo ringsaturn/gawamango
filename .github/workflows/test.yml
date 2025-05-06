@@ -1,0 +1,35 @@
+name: Go Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go Format Check
+        run: |
+          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+            gofmt -s -l .
+            echo "Please run 'gofmt -s -w .' to fix formatting issues"
+            exit 1
+          fi
+
+      - name: Go Vet
+        run: go vet ./...
+
+      - name: Go Test
+        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
