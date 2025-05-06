@@ -345,7 +345,8 @@ func (p *Proxy) copyWithTracing(ctx context.Context, dst io.Writer, src io.Reade
 				)
 				// ----- slow‑query detection -----
 				elapsed := time.Since(st.sentAt)
-				if elapsed > slowThreshold {
+				// Skip slow query detection for "hello" commands
+				if elapsed > slowThreshold && st.commandName != "hello" {
 					// Add arguments to the span attributes
 					rootSpan.SetAttributes(
 						attribute.Bool("mongodb.slow_query", true),
