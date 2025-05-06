@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -17,40 +16,10 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
-// ExporterType 定义导出器类型
-type ExporterType string
-
-const (
-	// ExporterTypeOTLP 表示使用 OTLP 导出器
-	ExporterTypeOTLP ExporterType = "otlp"
-	// ExporterTypeStdout 表示使用 stdout 导出器
-	ExporterTypeStdout ExporterType = "stdout"
-
-	// 环境变量名
-	envExporterType = "OTEL_EXPORTER_TYPE"
-)
-
-// GetExporterTypeFromEnv 从环境变量获取导出器类型
-func GetExporterTypeFromEnv() ExporterType {
-	exporterType := os.Getenv(envExporterType)
-	if exporterType == "" {
-		return ExporterTypeOTLP // 默认使用 OTLP
-	}
-
-	switch ExporterType(exporterType) {
-	case ExporterTypeOTLP:
-		return ExporterTypeOTLP
-	case ExporterTypeStdout:
-		return ExporterTypeStdout
-	default:
-		fmt.Printf("未知的导出器类型 %q，使用默认的 OTLP 导出器\n", exporterType)
-		return ExporterTypeOTLP
-	}
-}
-
 // SetupOTelSDK bootstraps the OpenTelemetry pipeline.
+// It relies on environment variables for configuration.
 // If it does not return an error, make sure to call shutdown for proper cleanup.
-func SetupOTelSDK(ctx context.Context, serviceName, serviceVersion string, exporterType ExporterType) (shutdown func(context.Context) error, err error) {
+func SetupOTelSDK(ctx context.Context, serviceName, serviceVersion string) (shutdown func(context.Context) error, err error) {
 	var shutdownFuncs []func(context.Context) error
 
 	// shutdown calls cleanup functions registered via shutdownFuncs.
@@ -70,19 +39,19 @@ func SetupOTelSDK(ctx context.Context, serviceName, serviceVersion string, expor
 		err = errors.Join(inErr, shutdown(ctx))
 	}
 
-	// Set up resource.
+	// Set up resource with service information
 	res, err := newResource(serviceName, serviceVersion)
 	if err != nil {
 		handleErr(err)
 		return
 	}
 
-	// Set up propagator.
+	// Set up propagator
 	prop := newPropagator()
 	otel.SetTextMapPropagator(prop)
 
-	// Set up trace provider.
-	tracerProvider, err := newTracerProvider(ctx, res, exporterType)
+	// Set up trace provider
+	tracerProvider, err := newTracerProvider(ctx, res)
 	if err != nil {
 		handleErr(err)
 		return
@@ -111,37 +80,69 @@ func newPropagator() propagation.TextMapPropagator {
 	)
 }
 
-func newTracerProvider(ctx context.Context, res *resource.Resource, exporterType ExporterType) (*sdktrace.TracerProvider, error) {
+// newTracerProvider creates a new TracerProvider with exporters configured
+// from environment variables.
+// Standard environment variables:
+// - OTEL_TRACES_EXPORTER: The exporter to use (e.g., "otlp", "stdout")
+// - OTEL_EXPORTER_OTLP_ENDPOINT: The OTLP endpoint URL
+// - OTEL_EXPORTER_OTLP_PROTOCOL: The OTLP protocol (e.g., "http/protobuf", "grpc")
+func newTracerProvider(ctx context.Context, res *resource.Resource) (*sdktrace.TracerProvider, error) {
+	// Use the exporter specified by OTEL_TRACES_EXPORTER
+	exporterType := os.Getenv("OTEL_TRACES_EXPORTER")
+	if exporterType == "" {
+		exporterType = "otlp" // Default to OTLP exporter
+	}
+
 	var exporter sdktrace.SpanExporter
 	var err error
 
 	switch exporterType {
-	case ExporterTypeStdout:
-		// 设置 stdout 导出器，将数据打印到控制台
+	case "stdout":
+		// Set up stdout exporter to print traces to console
 		exporter, err = stdouttrace.New(
-			stdouttrace.WithPrettyPrint(), // 使用格式化的 JSON 输出，便于阅读
+			stdouttrace.WithPrettyPrint(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create stdout exporter: %w", err)
 		}
-		fmt.Println("使用 stdout 导出器，跟踪数据将直接输出到控制台")
-	case ExporterTypeOTLP:
-		// 设置 OTLP 导出器
-		client := otlptracehttp.NewClient()
+		fmt.Println("Using stdout exporter: trace data will be output to console")
+	case "otlp":
+		// Use environment variables for OTLP configuration (OTEL_EXPORTER_OTLP_*)
+		clientOptions := []otlptracehttp.Option{}
+
+		// Check if we're connecting to localhost - if so, default to HTTP unless explicitly configured
+		endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+		if endpoint == "" {
+			endpoint = "http://localhost:4318"
+			clientOptions = append(clientOptions, otlptracehttp.WithEndpoint("localhost:4318"))
+			clientOptions = append(clientOptions, otlptracehttp.WithInsecure())
+		} else if endpoint == "localhost:4318" || endpoint == "http://localhost:4318" || endpoint == "https://localhost:4318" {
+			// For localhost, default to HTTP unless HTTPS is explicitly specified
+			if endpoint != "https://localhost:4318" {
+				clientOptions = append(clientOptions, otlptracehttp.WithInsecure())
+			}
+		}
+
+		// Allow explicit configuration of insecure mode via environment variable
+		if insecure := os.Getenv("OTEL_EXPORTER_OTLP_INSECURE"); insecure == "true" {
+			clientOptions = append(clientOptions, otlptracehttp.WithInsecure())
+		}
+
+		client := otlptracehttp.NewClient(clientOptions...)
 		exporter, err = otlptrace.New(ctx, client)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
 		}
-		fmt.Println("使用 OTLP 导出器，跟踪数据将发送到配置的端点")
+		fmt.Println("Using OTLP exporter: trace data will be sent to the configured endpoint")
 	default:
 		return nil, fmt.Errorf("unsupported exporter type: %s", exporterType)
 	}
 
-	// 创建 TracerProvider
+	_ = exporter
+	// Create the TracerProvider with the configured exporter
+	// The SDK will read other settings from environment variables
 	tracerProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter,
-			// 默认是 5s，这里设为 1s 用于演示目的
-			sdktrace.WithBatchTimeout(time.Second)),
+		// sdktrace.WithBatcher(exporter, sdktrace.WithBatchTimeout(time.Second)),
 		sdktrace.WithResource(res),
 	)
 

@@ -8,7 +8,6 @@ import (
 	"syscall"
 
 	"github.com/ringsaturn/gawamango/internal/proxy"
-	"github.com/ringsaturn/gawamango/internal/telemetry"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -53,13 +52,13 @@ func main() {
 		log.Fatalf("failed to start proxy: %v", err)
 	}
 
-	// 记录启动信息，包括当前使用的导出器类型
-	exporterType := telemetry.GetExporterTypeFromEnv()
-	logger.Info("Proxy started",
-		zap.String("listen", *listenAddr),
-		zap.String("target", *targetAddr),
-		zap.String("telemetry_exporter", string(exporterType)),
-	)
+	// // 记录启动信息，包括当前使用的导出器类型
+	// exporterType := telemetry.GetExporterTypeFromEnv()
+	// logger.Info("Proxy started",
+	// 	zap.String("listen", *listenAddr),
+	// 	zap.String("target", *targetAddr),
+	// 	zap.String("telemetry_exporter", string(exporterType)),
+	// )
 
 	// 等待信号
 	stop := make(chan os.Signal, 1)
