@@ -8,9 +8,8 @@ goarch: amd64
 env:
   - CGO_ENABLED=0
 
-# Binary name will be gawamango or gawamango.exe 
-binary: >-
-  {{ if eq .Os "windows" }}gawamango.exe{{ else }}gawamango{{ end }}
+# Binary name will be gawamango
+binary: gawamango
 
 # Main directory for the build
 dir: .
@@ -18,9 +17,9 @@ dir: .
 # Root main.go file to build
 main: ./cmd/gawamango/main.go
 
-# LDFLAGS to pass to the Go compiler
+# LDFLAGS to pass to the Go compiler - use direct value
 ldflags: 
-  - '{{ .Env.LDFLAGS }}'
+  - "-s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${VERSION}"
 
 # Ensure binary is built with Go modules
 goproxy: https://proxy.golang.org
