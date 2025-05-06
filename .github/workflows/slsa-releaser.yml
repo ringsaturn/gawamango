@@ -41,11 +41,13 @@ jobs:
     with:
       go-version: '1.24'
       evaluated-envs: |
-        COMMIT_DATE: ${{ needs.args.outputs.commit-date }}
-        COMMIT: ${{ needs.args.outputs.commit }}
-        VERSION: ${{ needs.args.outputs.version }}
-        TREE_STATE: ${{ needs.args.outputs.tree-state }}
-        LDFLAGS: -s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${{ needs.args.outputs.version }}
+        {
+          "COMMIT_DATE": "${{ needs.args.outputs.commit-date }}",
+          "COMMIT": "${{ needs.args.outputs.commit }}",
+          "VERSION": "${{ needs.args.outputs.version }}",
+          "TREE_STATE": "${{ needs.args.outputs.tree-state }}",
+          "LDFLAGS": "-s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${{ needs.args.outputs.version }}"
+        }
 
   # Verify and release
   verify-and-release:
