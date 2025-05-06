@@ -1,14 +1,9 @@
 version: 1
 
 # Build the main gawamango binary
-goos: 
-  - linux
-  - darwin
-  - windows
-
-goarch:
-  - amd64
-  - arm64
+# goos and goarch must be single strings, not arrays
+goos: linux
+goarch: amd64
 
 env:
   - CGO_ENABLED=0

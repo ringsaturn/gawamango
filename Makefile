@@ -1,6 +1,10 @@
+VERSION=$(shell git describe --tags --abbrev=0 | sed 's/.*+feat\.//')
+
 build:
 	mkdir -p bin
-	go build -o bin/gawamango cmd/gawamango/main.go
+	go build \
+		-ldflags="-s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${VERSION}" \
+		-o bin/gawamango cmd/gawamango/main.go
 
 run:
 	go run cmd/gawamango/main.go > run.log 2>&1

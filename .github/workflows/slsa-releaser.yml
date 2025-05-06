@@ -30,17 +30,29 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tree-state=$(if git diff --quiet; then echo "clean"; else echo "dirty"; fi)" >> "$GITHUB_OUTPUT"
 
-  # Trusted builder using the reusable workflow.
+  # SLSA builder - build only Linux AMD64
   build:
+    needs: args
     permissions:
       id-token: write  # For SLSA provenance
       contents: write  # For creating releases
       actions: read    # For workflow access
-    needs: args
     uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
     with:
       go-version: '1.24'
-      config-file: .slsa-goreleaser.yml
+      # Config for Linux AMD64 only
+      config-file: |
+        {
+          "version": 1,
+          "goos": "linux",
+          "goarch": "amd64",
+          "env": ["CGO_ENABLED=0"],
+          "binary": "gawamango",
+          "dir": ".",
+          "main": "./cmd/gawamango/main.go",
+          "ldflags": ["${{ needs.args.outputs.ldflags }}"],
+          "flags": ["-trimpath"]
+        }
       evaluated-envs: |
         COMMIT_DATE: ${{ needs.args.outputs.commit-date }}
         COMMIT: ${{ needs.args.outputs.commit }}
@@ -60,8 +72,8 @@ jobs:
       - name: Install SLSA verifier
         uses: slsa-framework/slsa-verifier/actions/installer@v2.4.1
 
-      # Download the artifacts and provenance
-      - name: Download artifacts
+      # Download artifacts
+      - name: Download binary
         uses: actions/download-artifact@v3
         with:
           name: ${{ needs.build.outputs.go-binary-name }}
@@ -72,23 +84,31 @@ jobs:
         with:
           name: ${{ needs.build.outputs.go-provenance-name }}
           path: artifacts
-
+      
+      # List files for debugging purposes
+      - name: List downloaded files
+        run: find artifacts -type f | sort
+      
       # Verify the provenance
       - name: Verify provenance
         run: |
-          for binary in artifacts/*; do
-            if [[ -f "$binary" && ! "$binary" =~ \.intoto\.jsonl$ ]]; then
-              echo "Verifying: $binary"
-              slsa-verifier verify-artifact \
-                --provenance-path "${binary}.intoto.jsonl" \
-                --artifact-path "$binary" \
-                --source-uri "github.com/${{ github.repository }}" \
-                --source-tag "${{ github.ref_name }}"
-            fi
-          done
+          binary=$(find artifacts -type f -not -name "*.intoto.jsonl" | head -1)
+          provenance="${binary}.intoto.jsonl"
+          if [[ -f "$provenance" ]]; then
+            echo "Verifying: $binary"
+            slsa-verifier verify-artifact \
+              --provenance-path "$provenance" \
+              --artifact-path "$binary" \
+              --source-uri "github.com/${{ github.repository }}" \
+              --source-tag "${{ github.ref_name }}"
+            echo "✅ Verification successful"
+          else
+            echo "⚠️ No provenance file found for $binary"
+            exit 1
+          fi
 
-      # Create GitHub release and upload assets
-      - name: Create GitHub Release and Upload Assets
+      # Create GitHub release with verified artifacts
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
@@ -98,15 +118,15 @@ jobs:
             ## gawamango ${{ needs.args.outputs.version }}
             
             This release was built with [SLSA Level 3](https://slsa.dev) compliance, 
-            providing verifiable build provenance.
+            providing verifiable build provenance for Linux AMD64.
             
             ### Verification
-            To verify the binaries, install the SLSA verifier:
+            To verify the binary, install the SLSA verifier:
             ```
             go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
             ```
             
-            Then verify an artifact:
+            Then verify the artifact:
             ```
             slsa-verifier verify-artifact \
               --provenance-path <file>.intoto.jsonl \
