@@ -48,3 +48,4 @@ jobs:
           "TREE_STATE": "${{ needs.args.outputs.tree-state }}",
           "LDFLAGS": "-s -w -X github.com/ringsaturn/gawamango/internal/proxy.Version=${{ needs.args.outputs.version }}"
         }
+      prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
