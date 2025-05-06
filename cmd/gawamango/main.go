@@ -52,14 +52,6 @@ func main() {
 		log.Fatalf("failed to start proxy: %v", err)
 	}
 
-	// // 记录启动信息，包括当前使用的导出器类型
-	// exporterType := telemetry.GetExporterTypeFromEnv()
-	// logger.Info("Proxy started",
-	// 	zap.String("listen", *listenAddr),
-	// 	zap.String("target", *targetAddr),
-	// 	zap.String("telemetry_exporter", string(exporterType)),
-	// )
-
 	// 等待信号
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

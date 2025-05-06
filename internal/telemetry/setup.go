@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -142,7 +143,7 @@ func newTracerProvider(ctx context.Context, res *resource.Resource) (*sdktrace.T
 	// Create the TracerProvider with the configured exporter
 	// The SDK will read other settings from environment variables
 	tracerProvider := sdktrace.NewTracerProvider(
-		// sdktrace.WithBatcher(exporter, sdktrace.WithBatchTimeout(time.Second)),
+		sdktrace.WithBatcher(exporter, sdktrace.WithBatchTimeout(time.Second)),
 		sdktrace.WithResource(res),
 	)
 

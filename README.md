@@ -38,7 +38,7 @@ gawamango -help
 For example, start a server:
 
 ```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 gawamango
+**OTEL_EXPORTER_OTLP_ENDPOINT**=http://localhost:4318 gawamango
 ```
 
 Then use MongoDB client to connect to gawamango.
@@ -64,7 +64,7 @@ You can view the traces in Jaeger like this:
 
 ### Environment Variables
 
-- `OTEL_EXPORTER_TYPE`: OpenTelemetry exporter type to use:
+- `OTEL_TRACES_EXPORTER`: OpenTelemetry exporter type to use:
   - `stdout`: Prints trace data directly to console (useful for debugging)
   - `otlp`: Uses OTLP exporter to send trace data to an OpenTelemetry collector
     (default)
@@ -72,7 +72,7 @@ You can view the traces in Jaeger like this:
 Example of using the stdout exporter for local debugging:
 
 ```bash
-OTEL_EXPORTER_TYPE=stdout gawamango
+OTEL_TRACES_EXPORTER=stdout gawamango
 ```
 
 When using OTLP exporter, you can configure the endpoint using the standard

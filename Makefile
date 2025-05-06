@@ -10,7 +10,7 @@ run:
 	go run cmd/gawamango/main.go > run.log 2>&1
 
 run-with-stdout:
-	OTEL_EXPORTER_TYPE=stdout go run cmd/gawamango/main.go > run.log 2>&1
+	OTEL_TRACES_EXPORTER=stdout go run cmd/gawamango/main.go > run.log 2>&1
 
 run-with-otlp:
 	OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run cmd/gawamango/main.go > run.log 2>&1
